@@ -542,10 +542,13 @@ export function writeLeadMcpConfig(id, busPath = join(BIN_DIR, 'soma-bus.mjs')) 
  *     delivered by anything.
  *
  * The safety consequence is contained, and containment is not the gate: a lead that never
- * declares a harness is caught by `HARNESS_DEFAULTED` in the watchdog tick
- * (`soma-watchdog.mjs`), which binds the fallback budget class and says so once per lead — so
- * no lead runs breakerless. What is lost is the *veto window*: the orchestrator cannot refuse a
- * wrong-shaped harness before budget is spent, because nothing forces the declaration to exist.
+ * declares a harness is priced at H1's class (`standard`) by rule 3 of `budgetClassOf`
+ * (`soma-watchdog.mjs`), with no event, so no lead runs breakerless. The silence is deliberate:
+ * every lead spends its first minutes undeclared, and an event on every spawn would be an alarm
+ * nobody keeps unmuted. `HARNESS_DEFAULTED` is a different case: it fires only when what the
+ * lead declared cannot be priced. What is lost is the *veto window*: the orchestrator cannot
+ * refuse a wrong-shaped harness before budget is spent, because nothing forces the declaration
+ * to exist.
  *
  * This correction is here, and not only in the hook, because **the generator is where someone
  * looks to find out what the hooks do.** A registration list that describes an earlier version
