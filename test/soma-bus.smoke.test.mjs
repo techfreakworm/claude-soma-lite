@@ -206,9 +206,17 @@ test('realDeps wires every dep bus-tools reaches for, and the only absences are 
   // this is the correction the whole dep contract turns on.
   for (const name of ['heartbeat', 'leaseStale', 'hasPane', 'updateFleet', 'admit', 'loadConfig',
     'readUsage', 'heartbeatAgeMs', 'queuePaused', 'setQueuePaused', 'backpressureState',
-    'validateHarnessReport', 'stampWake']) {
+    'validateHarnessReport', 'stampWake', 'launching']) {
     assert.equal(typeof deps[name], 'function', `${name} is consumed by a shipped handler and must be wired`);
   }
+});
+
+test('realDeps wires fleet.launching itself: soma_status reads a starting lead by the predicate reconcile and soma status read', () => {
+  freshHome();
+  // `bus-tools` imports nothing, so the predicate arrives as a dep. A transcription here would be a
+  // second bound: `soma_status` saying `starting` for a row the watchdog's reconcile already reads as
+  // dead and revives, or the reverse. The identity is asserted against the owner, not the behaviour.
+  assert.equal(bus.realDeps().launching, fleet.launching, 'the bus must wire fleet.launching itself');
 });
 
 test('the deferred deps refuse in a sentence rather than crashing, and name no path', async () => {

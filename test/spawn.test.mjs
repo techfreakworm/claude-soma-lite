@@ -448,7 +448,7 @@ test('SOMA_HOME reaches the lead resolved and identical to what the bus config r
 test('SOMA_TMUX_SOCKET reaches the lead as the server the spawner creates it on, injected and never copied', () => {
   const env = s.buildLeadEnv({ id: 'cr-1', env: SPAWNER_ENV });
   assert.equal(env.SOMA_TMUX_SOCKET, socketName());
-  assert.deepEqual(tmuxArgs([]), ['-L', env.SOMA_TMUX_SOCKET], 'the socket every tmux call from this process, newSession included, runs under');
+  assert.deepEqual(tmuxArgs([]), ['-L', env.SOMA_TMUX_SOCKET, '-u'], 'the socket every tmux call from this process, newSession included, runs under');
   const copied = s.buildLeadEnv({ id: 'cr-1', env: { ...SPAWNER_ENV, SOMA_TMUX_SOCKET: 'not-the-spawners-server' } });
   assert.equal(copied.SOMA_TMUX_SOCKET, socketName(),
     'a copied value can name a server the lead was not created on; the injected one cannot');

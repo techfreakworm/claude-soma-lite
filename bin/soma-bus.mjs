@@ -339,6 +339,7 @@ export function realDeps() {
     setTaskStatus: fleet.setTaskStatus,
     enqueue: fleet.enqueue,
     admit: fleet.admit,
+    launching: fleet.launching,
     // A lead asking which task it is. Non-throwing, because `leadTools` has no
     // catch-all net around it and `readFleet` puts the checkpoint's absolute path
     // in the message it throws for a torn file — which the transport would hand

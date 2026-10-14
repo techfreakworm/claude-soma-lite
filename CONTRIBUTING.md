@@ -148,27 +148,13 @@ uses both conventional prefixes (`fix(spawn): …`, `docs(runbook): …`, `test(
 module prefixes (`doctor: …`, `lead-gate: …`); either is fine. A subject that states the behaviour
 beats one that names the file: *the lead's write ban rides argv, not a file every teammate
 inherits* tells a reviewer far more than *update settings-gen*. If you measured something, put the
-measurement in the body. Sign off every commit (`git commit -s`); *Licence and sign-off* below
-says why.
+measurement in the body.
 
 ## Licence and sign-off
 
 claude-soma-lite is released under the [MIT License](LICENSE). Contributions are accepted under the
 MIT License, the same terms as the rest of the project, with no additional terms or conditions.
 
-Every commit must be signed off. A sign-off certifies the
-[Developer Certificate of Origin 1.1](https://developercertificate.org/): in short, that you wrote
-the change, or otherwise have the right to submit it under the project's licence. Sign off by
-committing with `-s`:
-
-```bash
-git commit -s -m "area: what changed"
-```
-
-That adds a `Signed-off-by:` line with the name and email address from your git configuration. If
-a sign-off is missing:
-
-- on your last commit: `git commit --amend -s --no-edit`;
-- on several commits: `git rebase --signoff main`, or whichever branch you started from.
-
-Then update your pull request with `git push --force-with-lease`.
+Sign-off is not required. You can sign off your commits with `git commit -s` if you like (it adds a
+`Signed-off-by:` line for the [Developer Certificate of Origin](https://developercertificate.org/)),
+but a pull request without one is fine, and you never need to amend or rebase to add it.

@@ -27,8 +27,6 @@ anything you ran by hand, such as `soma doctor` or a supervised run at max_leads
 - [ ] Docs are updated wherever a documented claim changed: `README.md`, `RUNBOOK.md`, and the
       prompts or the skill if they state the rule.
 - [ ] No new npm dependency (the project has none, and `test/smoke.test.mjs` enforces it).
-- [ ] Every commit is signed off (`git commit -s`), as the *Licence and sign-off* section of
-      `CONTRIBUTING.md` describes.
 - [ ] No private data in the diff, the commit messages or this description: no real home paths,
       hostnames, account or organisation names, repository names, emails, session ids, tokens
       or transcript excerpts.

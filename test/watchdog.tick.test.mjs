@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyLimit as realClassify, MIN_CLOSE_MS } from '../bin/lib/wd/limit-state.mjs';
+import * as fleetMod from '../bin/lib/fleet.mjs';
 
 /**
  * The tick, from the outside.
@@ -67,6 +68,7 @@ const row = (over = {}) => ({
   base_sha: null,
   seat: null,
   rotations: [],
+  launching_at: null,
   created: NOW - 10 * MIN,
   updated: NOW - 10 * MIN,
   ...over,
@@ -320,8 +322,131 @@ test('recording a session does NOT stamp `updated`, so a terminal event is never
   // the row stays `spawned` and its slot is held forever.
   assert.equal(c.task().updated, NOW, 'the status transition stamped it; the uuid write did not');
   // The uuid and the tmux target land in ONE `updateFleet`, so a reader can never see a row
-  // carrying the target without the uuid the meter needs.
-  assert.equal(c.calls.updateFleet, 1);
+  // carrying the target without the uuid the meter needs. Counted after the spawn: the claim before
+  // it is a transaction of its own (the status and the launch mark).
+  const spawnedAt = c.order.indexOf('spawnLead:a');
+  assert.notEqual(spawnedAt, -1, `the lead was never spawned (order: ${c.order.join(' ')})`);
+  assert.equal(c.order.slice(spawnedAt).filter((x) => x === 'updateFleet').length, 1);
+  assert.equal(c.calls.updateFleet, 2, 'the claim and the record, and nothing else');
+});
+
+// ════════════════════════ The launch mark ════════════════════════
+
+test('admission marks the launch in the claim\'s own transaction, and the write that records the session clears it', async () => {
+  const { tick } = await load('l48a-' + Date.now());
+  let seen = null;
+  const c = ctx({
+    fleet: { tasks: [row({ id: 'a', status: 'queued' })] },
+    // The row as any reader finds it while the spawner fetches, cuts the worktree and starts tmux.
+    spawnLead: (task) => {
+      seen = structuredClone(c.task('a'));
+      return { lead: task.id, session_uuid: 'u-a', tmux_target: 'lead-a', cwd: '/w/a' };
+    },
+  });
+  // Which transaction each status write ran inside, and what each transaction left behind.
+  let depth = 0;
+  const commits = [];
+  const depths = [];
+  const inner = c.deps.updateFleet;
+  c.deps.updateFleet = (mutate) => {
+    depth += 1;
+    try {
+      return inner(mutate);
+    } finally {
+      depth -= 1;
+      commits.push(structuredClone(c.task('a')));
+    }
+  };
+  const set = c.deps.setTaskStatus;
+  c.deps.setTaskStatus = (id, st) => { depths.push([st, depth]); return set(id, st); };
+  await tick(c.deps);
+
+  assert.deepEqual(c.calls.spawnLead, ['a']);
+  assert.equal(seen?.status, 'spawned', 'the spawner runs against a claimed row');
+  assert.equal(seen?.launching_at, NOW, 'and the claim already carries the mark, on the watchdog\'s clock');
+  // One transaction. A status write with the mark following separately leaves a moment in which the
+  // row is spawned, unmarked and sessionless: a dead lead to every reader.
+  assert.deepEqual(depths, [['spawned', 1]]);
+  assert.equal(commits[0].status, 'spawned');
+  assert.equal(commits[0].launching_at, NOW);
+  // Cleared by the write that records the session, never before it: the row is marked right up to
+  // the moment it names the session that replaces the mark.
+  const recorded = commits.findIndex((x) => x.lead_session_uuid === 'u-a');
+  assert.ok(recorded > 0, `the uuid is written by a transaction after the claim (commits: ${JSON.stringify(commits)})`);
+  assert.equal(commits[recorded - 1].launching_at, NOW);
+  assert.equal(commits[recorded].launching_at, null);
+  assert.equal(c.task().launching_at, null);
+  assert.equal(c.task().tmux_session, 'lead-a');
+});
+
+test('the claim stamps its mark from a fresh reading of the clock, not the tick\'s: a phase that ran long first must not spend the grace', async () => {
+  const { tick } = await load('l48e-' + Date.now());
+  // A clock that moves a minute per reading, so the tick's `now` (its first reading) and the one taken
+  // at the claim differ. A revival that threw after a two-minute fetch is the real way this happens.
+  const readings = [];
+  let clock = NOW;
+  let seen = null;
+  let latest = null;
+  const c = ctx({
+    fleet: { tasks: [row({ id: 'a', status: 'queued' })] },
+    spawnLead: (task) => {
+      seen = c.task('a').launching_at;
+      latest = readings.at(-1);
+      return { lead: task.id, session_uuid: 'u-a', tmux_target: 'lead-a', cwd: '/w/a' };
+    },
+    deps: { now: () => { clock += MIN; readings.push(clock); return clock; } },
+  });
+  await tick(c.deps);
+  assert.deepEqual(c.calls.spawnLead, ['a']);
+  assert.ok(Number.isFinite(seen) && seen > readings[0], `stamped after the tick's own now (${readings[0]}), got ${seen}`);
+  assert.equal(seen, latest, 'the reading taken at the claim, the last one before the spawner ran');
+});
+
+test('a spawn that fails clears the mark in its rollback, whether the task is queued again or given up on', async () => {
+  for (const [attempts, after] of [[0, 'queued'], [2, 'failed']]) {
+    const { tick } = await load(`l48b-${attempts}-` + Date.now());
+    let seen = null;
+    const c = ctx({
+      fleet: { tasks: [row({ id: 'a', status: 'queued', attempts })] },
+      spawnLead: () => {
+        seen = c.task('a').launching_at;
+        throw new Error('fetch timed out');
+      },
+    });
+    await tick(c.deps);
+    assert.equal(seen, NOW, `${after}: the claim marked the row before the spawner ran`);
+    assert.equal(c.task().status, after);
+    assert.equal(c.task().attempts, attempts + 1);
+    assert.equal(c.task().launching_at, null, `${after}: nothing is starting, so nothing may say so`);
+  }
+});
+
+test('a spawned row with a fresh mark and no session is a lead still starting: no LEAD_DEAD, no kill, no respawn', async () => {
+  const { tick } = await load('l48c-' + Date.now());
+  // `soma_spawn` claimed this row thirty seconds ago and is still fetching, outside the fleet lock,
+  // when the tick lands. Read as dead, the lead would be killed and spawned a second time under the
+  // spawner that is still starting it, and charged a revival attempt for the privilege.
+  const c = ctx({ fleet: { tasks: [row({ id: 'a', status: 'spawned', updated: NOW - 30_000, launching_at: NOW - 30_000 })] } });
+  await tick(c.deps);
+  assert.deepEqual(eventsOf(c, 'LEAD_DEAD'), []);
+  assert.deepEqual(c.calls.killSession, []);
+  assert.deepEqual(c.calls.spawnLead, []);
+  assert.deepEqual(c.calls.resumeLead, []);
+  assert.equal(c.task().attempts, 0);
+  assert.equal(c.task().status, 'spawned');
+  assert.equal(c.task().launching_at, NOW - 30_000, 'the mark is the spawner\'s to clear, not the tick\'s');
+});
+
+test('the same row with an expired mark IS revived: past the bound, a row whose spawner never recorded a session is treated as dead', async () => {
+  const { tick } = await load('l48d-' + Date.now());
+  const G = fleetMod.LAUNCH_GRACE_MS;
+  const c = ctx({ fleet: { tasks: [row({ id: 'a', status: 'spawned', updated: NOW - 5 * MIN, launching_at: NOW - G })] } });
+  await tick(c.deps);
+  assert.equal(oneEvent(c, 'LEAD_DEAD').lead, 'a');
+  assert.deepEqual(c.calls.killSession, ['lead-a']);
+  assert.deepEqual(c.calls.spawnLead, ['a'], 'no uuid on the row, so the revival is fresh');
+  assert.equal(c.task().attempts, 1);
+  assert.equal(c.task().launching_at, null, 'the revival records a session, and recording clears the stale mark');
 });
 
 // ════════════════════════ The queue pause ════════════════════════

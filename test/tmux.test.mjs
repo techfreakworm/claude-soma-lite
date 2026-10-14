@@ -423,6 +423,35 @@ test('paneStates keeps tabs inside a title, collapses a session to its ACTIVE pa
   assert.equal(proto.has('toString'), false, 'membership is Map membership, not property lookup');
 });
 
+test('a listing tmux answered but not one row of which parses is "not measured", never an empty fleet (#45)', async () => {
+  const t = await load('unparseable');
+  // What tmux 3.6a printed, byte for byte, for a live lead to a client in `LANG=C` (no `-u`): the
+  // tabs as `_`, and in the pane listing the title's `✳` too. Exit 0. Every row lacks its
+  // separator, every row was skipped, and the answer was an EMPTY Set — "no lead has a live pane" —
+  // which reconcile turns into LEAD_DEAD, a kill and a respawn for every spawned lead in one tick.
+  const live = () => ({ stdout: 'soma-watchdog_0\nlead-cr-1_0\n', stderr: '', code: 0 });
+  const panes = () => ({ stdout: 'lead-cr-1_%0_1_0_71101_sleep__ Claude Code\n', stderr: '', code: 0 });
+  assert.equal(t.liveSessions(live), null, 'liveSessions read a listing it could not parse as an empty server');
+  assert.equal(t.paneStates(panes), null, 'paneStates read a listing it could not parse as an empty server');
+
+  // The controls, which are what make the two nulls above a rule rather than a new blanket answer.
+  // An EMPTY listing on exit 0 is still a readable answer: a server with nothing on it.
+  const empty = () => ({ stdout: '', stderr: '', code: 0 });
+  assert.ok(t.liveSessions(empty) instanceof Set);
+  assert.equal(t.liveSessions(empty).size, 0);
+  assert.ok(t.paneStates(empty) instanceof Map);
+  assert.equal(t.paneStates(empty).size, 0);
+  // One row that parses keeps today's per-row skip: the listing WAS read, and the rows beside it
+  // that do not parse corroborate nothing.
+  assert.deepEqual([...t.liveSessions(() => ({ stdout: 'lead-cr-1_0\nlead-cr-2\t0\n', code: 0 }))], ['lead-cr-2']);
+  assert.deepEqual([...t.paneStates(() => ({ stdout: 'lead-cr-1_%0_1_0_7_zsh_\nlead-cr-2\t%1\t1\t0\t8\tzsh\t\n', code: 0 })).keys()], ['lead-cr-2']);
+  // And the backstop counts rows that PARSED, not rows that are live: a listing whose only row is a
+  // dead pane is a measured server with no live session on it, never "not measured".
+  const dead = t.liveSessions(() => ({ stdout: 'lead-cr-1\t1\n', code: 0 }));
+  assert.ok(dead instanceof Set, 'a parsed dead pane is a reading, not an unreadable listing');
+  assert.equal(dead.size, 0);
+});
+
 test('serverAbsent is true only for tmux\'s own two "no server answers on this socket" sentences', async () => {
   const t = await load('server-absent');
   // A machine that has never started soma's server: no socket FILE, so the connect is ENOENT.
@@ -469,6 +498,103 @@ test('the no-server reading is serverAbsent\'s alone: liveSessions and paneState
   }
 });
 
+test('tmuxProcessesOn finds a tmux by its OWN -L option, and by the whole name (#66)', async () => {
+  const t = await load('server-processes-parse');
+  const P = (pid, ...argv) => ({ pid, argv });
+  const procs = [
+    // What `ps` showed for a live server, measured: the argv of the client that started it.
+    P(11, 'tmux', '-L', 'soma', 'new-session', '-d', '-s', 'soma-watchdog', 'sleep', '600'),
+    P(12, 'tmux', '-Lsoma', 'new-session', '-d'),                // the value in the same word
+    P(13, 'tmux', '-u', '-L', 'soma', 'new-session'),            // after another flag: soma's own calls
+    P(14, '/usr/bin/tmux', '-L', 'soma', 'attach'),             // argv[0] a path
+    P(15, 'tmux', '-f', '/dev/null', '-L', 'soma', 'ls'),        // after a flag that takes a value
+    P(16, 'tmux', '-uL', 'soma', 'ls'),                         // grouped flags
+    P(21, 'tmux', '-L', 'soma_pers', 'new-session'),            // another fleet's socket: NOT soma
+    P(22, 'tmux', '-L', 'soma2', 'ls'),
+    P(23, 'node', 'bin/soma.mjs', '-L', 'soma'),                // not tmux
+    P(24, 'ssh', '-L', 'soma'),
+    P(25, 'notmux', '-L', 'soma'),
+    P(26, 'tmux', 'new-session', '-d', 'sh', '-c', 'x -L soma'),  // the COMMAND's words, not tmux's
+    P(27, 'tmux', '--', 'new-session', '-L', 'soma'),
+    P(28, 'tmux', 'ls'),                                        // the default socket
+    P(29, 'tmux', '-L'),                                        // no value at all
+    P(30, 'tmux', '-L', 'other', '-L', 'soma', 'ls'),           // the last -L wins, as in getopt
+    P(31),                                                      // no argv: a kernel thread
+    null,
+  ];
+  assert.deepEqual(t.tmuxProcessesOn(procs, 'soma'), [11, 12, 13, 14, 15, 16, 30]);
+  assert.deepEqual(t.tmuxProcessesOn(procs, 'soma_pers'), [21]);
+  assert.deepEqual(t.tmuxProcessesOn(procs, 'other'), [], 'overridden by a later -L');
+  assert.deepEqual(t.tmuxProcessesOn(null, 'soma'), []);
+});
+
+test('parsePs reads `ps -axo pid=,uid=,command=` into pids, uids and words (#66)', async () => {
+  const t = await load('parse-ps');
+  const ps = [
+    '    1     0 /sbin/launchd',
+    '64311   501 tmux -f /dev/null -L soma new-session -d -s soma-watchdog sleep 600',
+    '  777   502 /opt/homebrew/bin/tmux -L  soma_pers   attach',
+    '',
+    'not a row',
+    '  888 ',
+    '  889   501 ',                                   // a pid and a uid, and no command
+    '  890 tmux -L soma ls',                          // no uid: not a row of this listing
+  ].join('\n');
+  assert.deepEqual(t.parsePs(ps), [
+    { pid: 1, uid: 0, argv: ['/sbin/launchd'] },
+    { pid: 64311, uid: 501, argv: ['tmux', '-f', '/dev/null', '-L', 'soma', 'new-session', '-d', '-s', 'soma-watchdog', 'sleep', '600'] },
+    { pid: 777, uid: 502, argv: ['/opt/homebrew/bin/tmux', '-L', 'soma_pers', 'attach'] },
+  ]);
+  assert.deepEqual(t.tmuxProcessesOn(t.parsePs(ps), 'soma'), [64311]);
+  assert.deepEqual(t.parsePs(''), []);
+});
+
+test('serverProcesses answers three ways: pids, none, or "the process table could not be read" (#66)', async () => {
+  const t = await load('server-processes');
+  const P = (pid, ...argv) => ({ pid, uid: process.getuid(), argv });
+  const self = P(process.pid, 'node', '--test');
+  const table = [self, P(11, 'tmux', '-L', 'soma', 'new-session'), P(12, 'tmux', '-L', 'soma_pers', 'ls')];
+  assert.deepEqual(t.serverProcesses('soma', () => table), [11]);
+  assert.deepEqual(t.serverProcesses('soma_pers', () => table), [12]);
+  assert.deepEqual(t.serverProcesses('nobody', () => table), [], 'none found is an empty list, and it is what lets `up` start a server');
+  // Every process found, not the first: a server and a client attached to it, or two servers on one
+  // path. The refusal names each pid, because each may be the one to recover.
+  assert.deepEqual(t.serverProcesses('soma', () => [...table, P(13, 'tmux', '-L', 'soma', 'attach')]), [11, 13]);
+  // `null` is "cannot tell", which `up` refuses on. A table that could not be read is that — and so
+  // is one without THIS process in it, because it is not a listing of this machine's processes: an
+  // empty `ps`, or a /proc that is not procfs, would otherwise read as "no tmux anywhere".
+  assert.equal(t.serverProcesses('soma', () => null), null);
+  assert.equal(t.serverProcesses('soma', () => []), null, 'an empty table is not "none found"');
+  assert.equal(t.serverProcesses('soma', () => [P(11, 'tmux', '-L', 'soma')]), null, 'a table without this process was not read whole');
+  // The default socket is the module's own, the one every other call here talks to.
+  assert.deepEqual(t.serverProcesses(undefined, () => [self, P(13, 'tmux', '-L', t.socketName(), 'ls')]), [13]);
+});
+
+test('serverProcesses counts only this user\'s tmux: another user\'s `-L soma` is another socket (#66)', async () => {
+  const t = await load('server-processes-uid');
+  const me = process.getuid();
+  const other = me + 1;
+  const P = (pid, uid, ...argv) => ({ pid, uid, argv });
+  const self = P(process.pid, me, 'node', '--test');
+  // A `-L` socket lives at <TMUX_TMPDIR>/tmux-<uid>/<name>, so another user's `tmux -L soma` is never
+  // this user's socket. Counted, it would refuse this user's `up` for as long as it runs, on a shared
+  // machine, naming a pid this user is not allowed to signal.
+  const theirs = P(41, other, 'tmux', '-L', 'soma', 'new-session');
+  const ours = P(42, me, 'tmux', '-L', 'soma', 'ls');
+  assert.deepEqual(t.serverProcesses('soma', () => [self, theirs, ours]), [42], 'this user\'s, and not the other\'s');
+  assert.deepEqual(t.serverProcesses('soma', () => [self, theirs]), [], 'another user\'s alone is none found');
+  // A process whose owner did not read is not shown to be this user's, so it does not count either;
+  // `listProcesses` leaves such a process out.
+  assert.deepEqual(t.serverProcesses('soma', () => [self, P(43, undefined, 'tmux', '-L', 'soma')]), []);
+  // THIS process must be in the table as this user. If it is not, the owners were not read, every
+  // process looks like someone else's, and "none found" would start a server beside a live one.
+  assert.equal(t.serverProcesses('soma', () => [P(process.pid, undefined, 'node'), ours]), null);
+  assert.equal(t.serverProcesses('soma', () => [P(process.pid, other, 'node'), ours]), null);
+  // The uid compared is the one given (`process.getuid()` by default); with none there is no telling.
+  assert.deepEqual(t.serverProcesses('soma', () => [P(process.pid, other, 'node'), theirs, ours], other), [41]);
+  assert.equal(t.serverProcesses('soma', () => [self, ours], null), null, 'no uid to compare is "cannot tell"');
+});
+
 test('listPanes keeps tabs inside a pane title and tolerates an empty listing', async () => {
   const t = await load('panes');
   const { calls, run } = recorder({ stdout: '0\t0\tteam\tlead\n', code: 0 });
@@ -485,14 +611,29 @@ test('production still talks to the soma socket; tests can point elsewhere', asy
   const prod = await load('socket-default');
   // The single shared server is a design commitment (one inventory, one
   // failure domain) — nothing may quietly move soma off it.
-  assert.deepEqual(prod.tmuxArgs(['has-session', '-t', '=lead-cr-1']), ['-L', 'soma', 'has-session', '-t', '=lead-cr-1']);
+  assert.deepEqual(prod.tmuxArgs(['has-session', '-t', '=lead-cr-1']), ['-L', 'soma', '-u', 'has-session', '-t', '=lead-cr-1']);
 
   process.env.SOMA_TMUX_SOCKET = 'soma-throwaway';
   const isolated = await load('socket-override');
-  assert.deepEqual(isolated.tmuxArgs(['kill-session']), ['-L', 'soma-throwaway', 'kill-session']);
+  assert.deepEqual(isolated.tmuxArgs(['kill-session']), ['-L', 'soma-throwaway', '-u', 'kill-session']);
 
   process.env.SOMA_TMUX_SOCKET = '';             // an empty override is not an override
   assert.equal((await load('socket-empty')).tmuxArgs([])[1], 'soma');
+});
+
+test('every tmux call carries -u, so a listing parses the same whatever the caller\'s locale (#45)', async () => {
+  const t = await load('utf8-flag');
+  // Measured, tmux 3.6a: a client that does not believe it is in a UTF-8 locale (it reads the first
+  // of LC_ALL, LC_CTYPE and LANG that is set) prints every non-printable byte of a format's output
+  // as `_` — the TAB that separates `liveSessions`' and `paneStates`' fields included — and still
+  // exits 0. The watchdog runs under `env -i` with LANG and no LC_*, so `LANG=C`, or a locale that
+  // came from LC_ALL alone, was enough to read every live lead as dead. `-u` makes the client UTF-8
+  // whatever the environment says. On EVERY call, `soma attach` included: there it makes tmux draw
+  // UTF-8 to the operator's terminal, which is what a lead's pane holds in any case.
+  const argv = t.tmuxArgs(['list-panes', '-a']);
+  assert.deepEqual(argv, ['-L', t.socketName(), '-u', 'list-panes', '-a']);
+  // The socket stays at index 1: this file, spawn.test.mjs and the bus smoke test read it there.
+  assert.equal(t.tmuxArgs([])[1], t.socketName());
 });
 
 // The default run() is the only code path that touches the OS; exercise it with
@@ -635,4 +776,98 @@ test('against a real tmux: serverAbsent reads a never-started and a killed serve
   assert.equal(t.defaultRun(['kill-server']).code, 0);
   assert.equal(t.serverAbsent(), true, `after kill-server — tmux said: ${said()}`);
   if (existsSync(socketPath)) assert.match(said(), /^no server running on /, 'a stale socket file must be the path this exercised');
+});
+
+test('against a real tmux, from a shell with no UTF-8 locale: both listings still see a live session (#45)', { skip: !tmuxInstalled && 'tmux not installed' }, async (t_) => {
+  // Issue #45's shell, reproduced rather than described, in a CHILD process: `tmux.mjs` reads its
+  // socket once at load, and the locale that matters is the tmux client's, which inherits the
+  // child's environment. That environment is this one minus LC_ALL and LC_CTYPE, with LANG=C — the
+  // watchdog's own shape, which forwards LANG and no LC_* — and minus TMUX: measured, a client that
+  // sees $TMUX treats itself as UTF-8 whatever LANG says, so a suite run from inside a tmux pane
+  // would not reproduce the bug with it. (The watchdog has no $TMUX: `env -i` drops it.)
+  //
+  // The sandbox is under /tmp rather than `tmpdir()`: a Unix socket path is limited to about 104
+  // bytes on macOS, and a long TMPDIR pushes `<dir>/tmux-<uid>/<socket>` past it (issue #46).
+  const dir = mkdtempSync('/tmp/st-');
+  const sock = `sl-${process.pid}`;
+  const env = { ...process.env, LANG: 'C', TMUX_TMPDIR: dir, SOMA_TMUX_SOCKET: sock };
+  for (const k of ['LC_ALL', 'LC_CTYPE', 'TMUX', 'TMUX_PANE']) delete env[k];
+  // The sandbox's own spelling, for setup, the control and teardown — never the module under test,
+  // so the cleanup cannot reach another server whatever the module does.
+  const sandbox = (args) => spawnSync('tmux', ['-L', sock, ...args], { encoding: 'utf8', env });
+  t_.after(() => {
+    sandbox(['kill-server']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // `-f /dev/null` on the call that starts the server, for the reason the integration test gives.
+  const up = sandbox(['-f', '/dev/null', 'new-session', '-d', '-s', 'lead-cr-1', 'sleep 600']);
+  assert.equal(up.status, 0, `the sandbox server must start: ${up.stderr}`);
+  assert.equal(env.TMUX_TMPDIR, dir, 'the child must reach the sandbox, not the default socket directory');
+  assert.equal(env.SOMA_TMUX_SOCKET, sock, 'the child must talk to the sandbox socket, never a live fleet\'s');
+
+  // THE CONTROL: this environment reproduces the defect. Without it, a tmux that stopped mangling
+  // the tab would leave the assertions below green for a reason that has nothing to do with soma.
+  const raw = sandbox(['list-panes', '-a', '-F', '#{session_name}\t#{pane_dead}']);
+  assert.equal(raw.stdout, 'lead-cr-1_0\n', 'a C-locale client must print the tab as `_` here, or this test measures nothing');
+
+  const url = new URL('../bin/lib/tmux.mjs', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['-e',
+    `import(${JSON.stringify(url)}).then((m) => { const l = m.liveSessions(); const p = m.paneStates();`
+    + ' process.stdout.write(JSON.stringify({ socket: m.socketName(), live: l && [...l], panes: p && [...p.keys()] })); })',
+  ], { encoding: 'utf8', env });
+  assert.equal(child.status, 0, child.stderr);
+  const got = JSON.parse(child.stdout);
+  assert.equal(got.socket, sock);
+  assert.deepEqual(got.live, ['lead-cr-1'], 'liveSessions read a live session as absent (or as unmeasured)');
+  assert.deepEqual(got.panes, ['lead-cr-1'], 'paneStates read a live session as absent (or as unmeasured)');
+});
+
+test('against a real tmux: serverProcesses finds a live server by its -L name — still, once its socket file is gone (#66)', { skip: !tmuxInstalled && 'tmux not installed' }, async (t_) => {
+  // A sandbox of its own (the serverAbsent test's shape): TMUX_TMPDIR and the socket set BEFORE the
+  // import, because tmux.mjs reads SOMA_TMUX_SOCKET at load. Under /tmp for the socket path limit
+  // (#46). The scan reads the real process table, so the name is unique to this process: a scan
+  // for `soma` on a machine running a fleet would find that fleet's server, correctly.
+  const dir = mkdtempSync('/tmp/st-');
+  const sock = `sp-${process.pid}`;
+  const saved = { SOMA_TMUX_SOCKET: process.env.SOMA_TMUX_SOCKET, TMUX_TMPDIR: process.env.TMUX_TMPDIR };
+  process.env.SOMA_TMUX_SOCKET = sock;
+  process.env.TMUX_TMPDIR = dir;
+  const sandbox = (args) => spawnSync('tmux', ['-L', sock, ...args], { encoding: 'utf8', env: { ...process.env, TMUX_TMPDIR: dir } });
+  let pid = null;
+  const alive = (p) => { try { process.kill(p, 0); return true; } catch { return false; } };
+  t_.after(() => {
+    sandbox(['kill-server']);
+    // Once its socket file is gone, kill-server cannot reach it: the server goes by its pid, which
+    // was read from the sandbox's own `display-message`, so it can only be the sandbox server.
+    if (pid !== null && alive(pid)) process.kill(pid, 'SIGKILL');
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const t = await load('server-processes-real');
+  assert.equal(t.socketName(), sock, 'this test must not scan for the production socket');
+  const up = sandbox(['-f', '/dev/null', 'new-session', '-d', '-s', 'probe', 'sleep 600']);
+  assert.equal(up.status, 0, `the sandbox server must start: ${up.stderr}`);
+  pid = Number(sandbox(['display-message', '-p', '#{pid}']).stdout.trim());
+  assert.ok(Number.isInteger(pid) && pid > 0, 'the server pid, from the server itself');
+
+  assert.deepEqual(t.serverProcesses(), [pid], 'the sandbox server, by pid, and nothing else');
+  // Found as this user's: the owner the real process table gives the server is the uid the scan keeps.
+  assert.equal(t.listProcesses().find((p) => p.pid === pid)?.uid, process.getuid(), 'the server reads as this user\'s');
+  assert.deepEqual(t.serverProcesses(`${sock}x`), [], 'a longer name is another socket');
+  assert.deepEqual(t.serverProcesses(sock.slice(0, -1)), [], 'and so is a prefix: `soma` is not `soma_pers`');
+
+  // The state #66 is about, made rather than described: the socket FILE deleted under a live server.
+  const socketPath = sandbox(['display-message', '-p', '#{socket_path}']).stdout.trim();
+  assert.ok(socketPath.endsWith(`/${sock}`), `expected the sandbox socket, got ${socketPath}`);
+  rmSync(socketPath);
+  assert.equal(t.serverAbsent(), true, 'tmux now says no server answers on the socket');
+  assert.equal(alive(pid), true, 'while the server is alive');
+  assert.deepEqual(t.serverProcesses(), [pid], 'and the scan still finds it — what `soma up` asks before it starts a second one');
+
+  // The control: once the server is really gone, the same scan finds nothing.
+  process.kill(pid, 'SIGTERM');
+  for (const deadline = Date.now() + 4000; alive(pid) && Date.now() < deadline;) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(alive(pid), false, 'the sandbox server did not exit on SIGTERM');
+  pid = null;                                      // gone: the cleanup must never signal a reused pid
+  assert.deepEqual(t.serverProcesses(), [], 'a server that is gone is not found');
 });

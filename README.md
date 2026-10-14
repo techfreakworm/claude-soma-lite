@@ -390,8 +390,8 @@ soma2() {
 key (objects merge; arrays such as `seats` replace). Unknown keys are kept. The file is re-read on
 every watchdog tick, so most edits apply on the next tick. An unreadable file is an error, never a
 silent fall-back to the defaults, and so is a `seats` that is not an array: `soma up` exits 2 naming
-the key, and a running watchdog logs `WATCHDOG_ERROR` every tick and does nothing until the file is
-fixed. soma never writes this file.
+the key, whether or not a watchdog is already running, and a running watchdog logs `WATCHDOG_ERROR`
+every tick and does nothing until the file is fixed. soma never writes this file.
 
 **`repos` is the key you must fill in.** A task's `repo` field is a key into this map, not a path.
 With `repos` empty, a task cannot spawn: the watchdog retries it three times and then marks it
@@ -590,7 +590,7 @@ soma retry my-task-1            # put a failed or skipped row back on the queue
 | `soma` / `soma help` | Print usage. Bare `soma` exits 1; `help`, `--help` and `-h` exit 0. |
 | `soma init [--seat <dir>]` | Create the state tree, install the `/soma-promote` skill, register the bus at user scope with this fleet's `SOMA_HOME` and tmux socket pinned, and read both back. Reports whether the inject hook is registered (it never installs it). `--seat <dir>` does the skill and the registration in a rotation seat's config dir instead. Idempotent. |
 | `soma doctor` | Run every environment check and print what it observed. Exit 0 on PASS or INCOMPLETE, 3 on FAIL. |
-| `soma up [--canary]` | Print the worst-case spend projection, ask for `yes` on a terminal, start the watchdog in tmux, and read it back. No `--yes`; anything other than `y` or `yes`, including Ctrl-D, declines with exit 1. If a watchdog is already live, start nothing. `--canary` cannot pass on this build. |
+| `soma up [--canary]` | Print the worst-case spend projection, ask for `yes` on a terminal, start the watchdog in tmux, and read it back. No `--yes`; anything other than `y` or `yes`, including Ctrl-D, declines with exit 1. If a watchdog is already live, start nothing. If tmux cannot be read, or says no server answers while a tmux process for soma's socket is still alive (or while the process table cannot be read), refuse with exit 3 before asking anything. `--canary` cannot pass on this build. |
 | `soma down` | Stop the watchdog. **Running leads are not stopped**: they continue unsupervised until `soma up`. |
 | `soma status` | State root, queue, backpressure, lease, watchdog, seat pool, and one row per lead with its pane state and seat. Read-only. |
 | `soma enqueue --file <tasks.json>` | Add tasks from a JSON array. Invalid and duplicate ids are skipped and listed; exit 3 if nothing was queued. |
@@ -831,6 +831,8 @@ details.
 | `soma status` shows `LIVE ?` everywhere | tmux could not be read, which is not a dead fleet | `tmux -L soma ls` |
 | `soma kill` or `soma down` exits 3 | soma could not confirm the session stopped, so it changed nothing | `soma status`, then try again |
 | `soma up` refuses with *no terminal here to confirm* | stdin is not a TTY. There is no `--yes` | run it from an interactive shell |
+| `soma up` exits 3: *whether a watchdog is already running is UNKNOWN* | tmux could not be read, so `up` cannot see a watchdog that may be running | `soma status` and `soma doctor`; see [RUNBOOK §11.10](RUNBOOK.md#1110-a-live-tmux-server-can-say-no-server-and-status-and-down-then-believe-it) |
+| `soma up` exits 3: *a tmux process for that socket is still alive (pid …)* | no server answers on the socket, but its server process is alive: its socket file was deleted, or it is wedged | `kill -USR1 <pid>` (deleted socket) or `kill -CONT <pid>` (stopped server), then `soma status` before `soma up`; [RUNBOOK §11.10](RUNBOOK.md#1110-a-live-tmux-server-can-say-no-server-and-status-and-down-then-believe-it) |
 | `soma up --canary` exits 3: *the canary did not report a pass* | expected: the live driver is not built, so the canary reports `ERROR` and proves nothing | run `soma up` without `--canary` |
 | `SOMA_HOME must be an absolute path` | a relative value, or a quoted `~` | spell the path out |
 | `does not support hard links` | `SOMA_HOME` is on exFAT, FAT, or a FUSE or cloud-sync mount | move `SOMA_HOME` to a local volume |
@@ -927,9 +929,8 @@ build. Re-prove the RUNBOOK §10 invariants after every upgrade.
 
 Contributions are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first: the dev setup is Node 24
 and `npm test`, with no dependencies, and the culture is safety-first. Report security problems
-privately as [`SECURITY.md`](SECURITY.md) describes, never in a public issue. Every commit needs a
-Developer Certificate of Origin sign-off (`git commit -s`). Everyone taking part agrees to the
-[Code of Conduct](CODE_OF_CONDUCT.md).
+privately as [`SECURITY.md`](SECURITY.md) describes, never in a public issue. Signing off commits is
+optional. Everyone taking part agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

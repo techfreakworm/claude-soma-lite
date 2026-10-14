@@ -110,6 +110,58 @@ export const rotationsWithin = (rotations, now = Date.now()) => (Array.isArray(r
   : []);
 
 /**
+ * How long a launch mark keeps a `spawned` row with no session reading as STARTING rather than
+ * dead. It covers, term by term —
+ *
+ * - 30 s: the wait for the repo lock (`worktree.mjs`'s `LOCK_TIMEOUT_MS`), when this spawn queues
+ *   behind another spawn on the same repo that holds it across its own fetch;
+ * - 120 s: ONE full git call, the fetch (`worktree.mjs`'s `GIT_TIMEOUT_MS`);
+ * - 60 s: everything else — the rest of git, the guard file, the trust mark and its lock, the
+ *   settings, and the tmux calls that create the session.
+ *
+ * It is not the longest launch possible: every git call is allowed its own `GIT_TIMEOUT_MS`, and a
+ * launch makes several under the repo lock, `worktree add` (a whole checkout) among them.
+ *
+ * Both spawn paths claim the row (status `spawned`, `launching_at` stamped, in one transaction)
+ * before the session exists, and the session is the LAST thing a spawn creates, so for the whole
+ * launch the row looks exactly like a lead that died. The mark says otherwise, and this bounds how
+ * long it is believed. Past it, a row that still has no session is treated as dead, as every
+ * launching row was for its whole window before the mark. Usually that is a spawner that crashed
+ * before recording a session: a lost mark costs one bound of revival latency and never holds a
+ * slot. A launch that is only slower than the bound gets the same treatment — a `LEAD_DEAD` and a
+ * charged revival attempt every tick until its session appears, `GAVE_UP` after three — and if its
+ * session appears between a tick's liveness read and `revive`'s kill, that fresh session is killed
+ * and a replacement spawned. Two sessions never run at once: the spawner holds the repo lock across
+ * the worktree and the launch, and checks for the session again under it. A literal rather than a
+ * sum of the two imports, because the bus imports this module statically and reaches `worktree.mjs`
+ * only through its optional spawner import; the relation is pinned in `test/fleet.test.mjs` instead.
+ */
+export const LAUNCH_GRACE_MS = 30_000 + 120_000 + 60_000;
+
+/**
+ * Is this row a lead that is still being launched? `spawned`, carrying a finite `launching_at`, and
+ * a mark less than `LAUNCH_GRACE_MS` away from `now`.
+ *
+ * ONE predicate, read by every reader that would otherwise call such a row dead — `reconcile` (which
+ * then leaves it alone), `soma_status` and `soma status` (which then say `starting`) — so the reports
+ * and the reviver judge a row by one rule and one bound. It answers only "launching?", never
+ * "alive?": a reader asks it once it has found no session, and a live session beats the mark.
+ *
+ * Away in either direction, because a mark can sit in the future: a clock stepped back after the
+ * claim, or a hand-edited stamp. Believed for ever, such a mark would keep the row out of reconcile's
+ * reach until the clock caught up — a slot held by nothing. A small step still reads as starting; a
+ * backward step larger than the bound falls back to the unmarked reading: a row with no session is dead.
+ *
+ * Only a claimed `spawned` row is ever launching: the resume paths and blocked -> spawned move a row
+ * into `spawned` with its session already up, and they write no mark. No `now` (or a non-finite one)
+ * is no grace at all, which is how `reconcile` keeps its old contract for a caller with no clock.
+ */
+export const launching = (row, now) => row?.status === 'spawned'
+  && Number.isFinite(row.launching_at)
+  && Number.isFinite(now)
+  && Math.abs(now - row.launching_at) < LAUNCH_GRACE_MS;
+
+/**
  * Publish `fleet` atomically.
  *
  * Call this under `withFleetLock` — via `updateFleet`, ideally. The rename only
@@ -330,6 +382,9 @@ export function enqueue(tasks, { repos } = {}) {
         // record a caller holds and the one on disk must have the same keys.
         seat: null,
         rotations: [],
+        // No launch in flight. A spawn's claim stamps it and the write that records the session (or
+        // the rollback) clears it; see `launching`. `null` rather than absent, as above.
+        launching_at: null,
         created: now,
         updated: now,
       });

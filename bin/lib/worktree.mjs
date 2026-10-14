@@ -65,7 +65,7 @@ export const repoSlug = (repo) => {
 };
 
 /** A wedged git — an ssh passphrase prompt, an unreachable host — must not hang a spawn forever. */
-const GIT_TIMEOUT_MS = 120_000;
+export const GIT_TIMEOUT_MS = 120_000;
 
 /**
  * Run `git <args>`, reporting the exit code instead of throwing.
@@ -102,7 +102,7 @@ const why = (r) => (r.stderr || r.stdout || '').trim() || `exit ${r.code}`;
 // --- the per-repo lock -------------------------------------------------------
 
 /** Wait this long for a live holder before giving up. Held across a fetch, so generous. */
-const LOCK_TIMEOUT_MS = 30_000;
+export const LOCK_TIMEOUT_MS = 30_000;
 /** Gap between acquisition attempts. */
 const LOCK_RETRY_MS = 25;
 

@@ -123,6 +123,33 @@ test('reconcile refuses a liveness container that is not a Set', async () => {
   assert.deepEqual(reconcile(fleet, new Map([['lead-a', 1]])).deadLeads, []);
 });
 
+test('reconcile leaves a lead that is still launching alone, and only while its mark is inside the bound', async () => {
+  const { reconcile } = await import('../bin/lib/wd/reconcile.mjs?launching-' + Date.now());
+  const { LAUNCH_GRACE_MS } = await import('../bin/lib/fleet.mjs');
+  const now = 1_440_433_800_000;
+  const fleet = {
+    tasks: [
+      // soma_spawn claimed this row and is thirty seconds into its fetch, outside the fleet lock: no
+      // session yet, and none missing. Revived here, it is killed and respawned under the spawner.
+      { id: 'starting', status: 'spawned', launching_at: now - 30_000 },
+      // The control that proves the bound: the same row once the mark is LAUNCH_GRACE_MS old is
+      // dead to reconcile again, and its slot comes back through revival like any dead lead's.
+      { id: 'expired', status: 'spawned', launching_at: now - LAUNCH_GRACE_MS },
+      // Unmarked rows read exactly as before: one whose mark was cleared, and one from before the mark.
+      { id: 'cleared', status: 'spawned', launching_at: null },
+      { id: 'legacy', status: 'spawned' },
+      // A live session beats the mark; a queued row is never judged.
+      { id: 'up', status: 'spawned', launching_at: now - 30_000 },
+      { id: 'queued-one', status: 'queued', launching_at: now - 30_000 },
+    ],
+  };
+  const r = reconcile(fleet, new Set(['lead-up']), now);
+  assert.deepEqual(r.deadLeads, ['expired', 'cleared', 'legacy']);
+  assert.deepEqual(r.updates.map((u) => u.id), ['expired', 'cleared', 'legacy'], 'a launching row is not re-affirmed either');
+  // No clock, no grace: the contract every caller had before the mark existed.
+  assert.deepEqual(reconcile(fleet, new Set(['lead-up'])).deadLeads, ['starting', 'expired', 'cleared', 'legacy']);
+});
+
 // ─────────────────────────── revive ───────────────────────────
 
 test('planRevival judges LIVE CONTEXT and is indifferent to cumulative spend', async () => {

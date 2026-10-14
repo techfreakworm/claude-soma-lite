@@ -10,6 +10,15 @@
  * pane with `pane_dead=0` running `zsh` instead of claude is a dead lead to this function
  * without it knowing why. The filter lives in the tick; this contract does not move.
  *
+ * A `spawned` row that is still being launched (`fleet.launching`) has no session YET rather
+ * than none any more: `soma_spawn` claims the row and spawns outside the fleet lock, and the
+ * session is the last thing a spawn creates. So it is left alone, neither dead nor
+ * re-affirmed, until its mark is `LAUNCH_GRACE_MS` old; past that, a row with no session is
+ * dead to this function again: usually a spawner that died, sometimes a launch slower than the
+ * bound (`LAUNCH_GRACE_MS` says what that costs). The mark is dated by the `now` the tick hands
+ * over (still no clock read here), and a caller that passes none gets the contract as it was
+ * before the mark.
+ *
  * Two things it deliberately does not do:
  *
  * - **It proposes no status transition.** `updates` re-affirms `spawned` for each dead
@@ -30,13 +39,16 @@
  *   structural requirement is enforced rather than assumed.
  */
 
+import { launching } from '../fleet.mjs';
+
 /**
  * Leads whose session has vanished: `{ updates, deadLeads }`.
  *
  * @param {{tasks: Array<{id: string, status: string}>}} fleet a checkpoint snapshot
  * @param {{has: (name: string) => boolean}} aliveSessions live tmux session names
+ * @param {number} [now] the caller's clock, for launch marks; omitted, no row is read as launching
  */
-export function reconcile(fleet, aliveSessions) {
+export function reconcile(fleet, aliveSessions, now) {
   const tasks = fleet?.tasks;
   if (!Array.isArray(tasks)) {
     throw new TypeError(`reconcile: fleet.tasks must be an array, got ${describe(tasks)}`);
@@ -54,6 +66,8 @@ export function reconcile(fleet, aliveSessions) {
     // skipped or blocked row has no session to miss, and a queued one never had one.
     if (t?.status !== 'spawned') continue;
     if (aliveSessions.has(`lead-${t.id}`)) continue;
+    // Still being launched: not dead, and not re-affirmed either. See the module header.
+    if (launching(t, now)) continue;
     deadLeads.push(t.id);
     updates.push({ id: t.id, status: 'spawned' });
   }

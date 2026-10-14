@@ -1686,6 +1686,14 @@ export function orchTools(ctx) {
      * one of the answers it can mean. `setTaskStatus` nests safely (it shares this
      * snapshot and publishes once) and is also what stamps `last_spawn_at`, the
      * stagger clock, which is why nothing below touches that field.
+     *
+     * The claim also writes the LAUNCH MARK, `launching_at`. The spawn below runs outside
+     * the lock and creates the tmux session last, after a fetch allowed two minutes, so
+     * until it records the session this row is `spawned` with no session: a dead lead to
+     * both status reports, and to a watchdog tick that lands in the window, which would
+     * revive it under this spawner. The mark is what they read as "still starting"
+     * instead (`fleet.launching`, bounded); the record below clears it, and so does the
+     * requeue if the spawn fails.
      */
     let claimed;
     try {
@@ -1708,6 +1716,7 @@ export function orchTools(ctx) {
           }
         }
         deps.setTaskStatus(task_id, 'spawned');
+        task.launching_at = Date.now();
         return { task: { ...task } };
       });
     } catch (e) {
@@ -1726,10 +1735,18 @@ export function orchTools(ctx) {
     } catch (e) {
       let requeued = false;
       try {
-        await deps.setTaskStatus(task_id, 'queued');
+        // Back in the queue and no longer starting, in one write: a row that kept the mark would
+        // read `starting` for nothing, and one that lost it first would read dead for a moment.
+        await deps.updateFleet((fleet) => {
+          deps.setTaskStatus(task_id, 'queued');
+          const task = (Array.isArray(fleet?.tasks) ? fleet.tasks : []).find((t) => t?.id === task_id);
+          if (task) task.launching_at = null;
+          return true;
+        });
         requeued = true;
       } catch {
-        // the watchdog's reconcile is the backstop
+        // the watchdog's reconcile is the backstop: the mark stays, so it waits out the bound and
+        // then revives the row like any dead lead
       }
       return {
         ok: false,
@@ -1759,6 +1776,9 @@ export function orchTools(ctx) {
         // env): what the watchdog's limits phase closes on this lead's next limit hit. Same write
         // as the uuid, so the row cannot say "spawned on seat-b" with no session, or the reverse.
         task.seat = seat;
+        // The session exists now, so the launch mark the claim wrote goes, in the same write as
+        // the target: liveness is the session's from here on.
+        task.launching_at = null;
         // `updated` is deliberately NOT stamped here. It is the clock the terminal
         // guard reads, and the `spawned` transition a few lines above already moved
         // it — earlier, which is the direction that cannot strand an event. Stamping
@@ -1856,6 +1876,21 @@ export function orchTools(ctx) {
     }
   };
 
+  /**
+   * Is this row a lead that is still being launched? Asked through the injected predicate
+   * (`fleet.launching`, which `soma-bus.mjs` wires) because this module imports nothing: the ONE
+   * the watchdog's reconcile and `soma status` read too, so the three judge a row by one rule.
+   * No predicate wired, or one that throws, answers no — the answer every row got before the mark.
+   */
+  const launchingNow = async (task) => {
+    if (!has('launching')) return false;
+    try {
+      return (await deps.launching(task, Date.now())) === true;
+    } catch {
+      return false;
+    }
+  };
+
   const statusRow = async (task, cfg, panes) => {
     const target = targetOf(task);
     const running = task?.status === 'spawned';
@@ -1864,18 +1899,23 @@ export function orchTools(ctx) {
     const readLive = pane.source === 'live';
     // Liveness from the PANE when it can be read (added after leads sat unseen as bare shells):
     // `sessionAlive` is a session-NAME probe, and a dead pane and a bare shell both answered
-    // "alive" to it. Four values now, and the fourth is the point: `unknown` when the pane could
-    // not be observed, never `absent` — a tmux hiccup must not render a working lead as gone. A
-    // bus with no reader keeps the name probe, so an old wiring degrades to the old answer rather
-    // than to no answer.
+    // "alive" to it. Five values now. `unknown` when the pane could not be observed, never
+    // `absent` — a tmux hiccup must not render a working lead as gone. And `starting` for a lead
+    // whose spawn has claimed the row and not yet made its session: the claim comes first and the
+    // session last, after a fetch allowed two minutes, and for that whole window the row read
+    // exactly like a lead that had died. Only a pane that reads ABSENT (or, with no reader, a
+    // session that is not there) can be starting, so `unknown` still wins, and a dead pane or a
+    // bare shell is never dressed up as a launch. A bus with no reader keeps the name probe, so
+    // an old wiring degrades to the old answer rather than to no answer.
     let liveness;
     if (!running) liveness = 'not-running';
     else if (readLive) {
       liveness = pane.state === 'alive' || pane.state === 'blocked_on_prompt' || pane.state === 'unrecognised'
         ? 'alive'
-        : pane.state === 'unobservable' ? 'unknown' : 'absent';
+        : pane.state === 'unobservable' ? 'unknown'
+          : pane.state === 'absent' && (await launchingNow(task)) ? 'starting' : 'absent';
     } else {
-      liveness = (await sessionAlive(target)) ? 'alive' : 'absent';
+      liveness = (await sessionAlive(target)) ? 'alive' : (await launchingNow(task)) ? 'starting' : 'absent';
     }
     const live = liveness === 'alive';
     const recordedState = cut(task?.pane_state, 32);
@@ -1888,8 +1928,10 @@ export function orchTools(ctx) {
       title: cut(task.title, MAX_TITLE),
       repo: cut(task.repo, MAX_ECHO),
       status: cut(task.status, 32),
-      // Three values, not two: a done or blocked lead is not "absent", and reading
-      // it as absent is what makes an operator revive something that finished.
+      // `alive`, `starting`, `absent`, `unknown` or `not-running` (see above). Never two values: a
+      // done or blocked lead is not "absent", and reading it as absent is what makes an operator
+      // revive something that finished; a lead still starting is not either, and reading it as
+      // absent is what makes one kill a lead in the middle of its launch.
       liveness,
       // What the pane is doing, beside what `status` says — live when this bus can read panes,
       // else the watchdog's recorded word. NO excerpt here: the dialog text carries absolute

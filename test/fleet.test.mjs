@@ -174,8 +174,8 @@ test('a queued task carries the whole record, and the checkpoint round-trips thr
   const [one, two] = f.readFleet().tasks;
   assert.deepEqual(Object.keys(one).sort(), [
     'attempts', 'base_branch', 'base_sha', 'brief', 'budget_class', 'budget_override', 'created', 'id',
-    'lead_session_uuid', 'repo', 'rotations', 'seat', 'source', 'status', 'title', 'tmux_session', 'updated',
-    'verify_hint',
+    'launching_at', 'lead_session_uuid', 'repo', 'rotations', 'seat', 'source', 'status', 'title', 'tmux_session',
+    'updated', 'verify_hint',
   ]);
   assert.equal(one.status, 'queued');
   assert.equal(one.attempts, 0);
@@ -940,4 +940,75 @@ test('writeFleet prunes against the clock it is GIVEN, not the wall clock — th
   fleet.tasks[0].rotations = [dayAgo - 30 * 60 * 1000, dayAgo];
   f.writeFleet(fleet, dayAgo);
   assert.deepEqual(f.readFleet().tasks[0].rotations, [dayAgo - 30 * 60 * 1000, dayAgo]);
+});
+
+// --------------------------------------------------------------------------- the launch mark
+
+test('a queued row starts with launching_at: null — no launch in flight, written rather than absent', async (t) => {
+  const { f } = await fresh(t, 'launching-null');
+  f.enqueue([task('cr-1')]);
+  assert.equal(f.readFleet().tasks[0].launching_at, null);
+});
+
+test('launching: a spawned row with a mark is starting until the mark is LAUNCH_GRACE_MS old, and from then on it is not', async (t) => {
+  const { f } = await fresh(t, 'launching-bound');
+  const now = 1_440_433_800_000;
+  const G = f.LAUNCH_GRACE_MS;
+  const marked = (age) => ({ id: 'cr-1', status: 'spawned', launching_at: now - age });
+  assert.equal(f.launching(marked(0), now), true, 'claimed this instant');
+  assert.equal(f.launching(marked(30_000), now), true, 'thirty seconds into a fetch');
+  assert.equal(f.launching(marked(G - 1), now), true, 'the last millisecond inside the bound');
+  // Past the bound a row with no session is treated as dead again, as every row was before the
+  // mark. Reading it as starting for ever is how a lost mark would hold a slot no reconcile can free.
+  assert.equal(f.launching(marked(G), now), false, 'the bound itself is out');
+  assert.equal(f.launching(marked(G + 1), now), false);
+  assert.equal(f.launching(marked(24 * 3600 * 1000), now), false, 'a day-old mark that a lost record left behind');
+});
+
+test('launching: no mark, a mark that is not a number, a row that is not spawned, or no clock is never starting', async (t) => {
+  const { f } = await fresh(t, 'launching-never');
+  const now = 1_440_433_800_000;
+  const recent = now - 1000;
+  for (const mark of [null, undefined, Number.NaN, Infinity, String(recent), {}]) {
+    assert.equal(f.launching({ id: 'cr-1', status: 'spawned', launching_at: mark }, now), false, `mark ${String(mark)}`);
+  }
+  assert.equal(f.launching({ id: 'cr-1', status: 'spawned' }, now), false, 'a row from before the mark existed');
+  // The resume paths and blocked -> spawned move a row into `spawned` with a session already up, and
+  // a finished row has nothing to start: only a claimed `spawned` row is ever starting.
+  for (const status of ['queued', 'done', 'failed', 'blocked', 'skipped']) {
+    assert.equal(f.launching({ id: 'cr-1', status, launching_at: recent }, now), false, status);
+  }
+  // No clock, no grace: `reconcile` called without one keeps its old contract.
+  for (const clock of [undefined, null, Number.NaN, String(now)]) {
+    assert.equal(f.launching({ id: 'cr-1', status: 'spawned', launching_at: recent }, clock), false, `now ${String(clock)}`);
+  }
+  for (const hole of [null, undefined, 'cr-1']) assert.equal(f.launching(hole, now), false, `row ${String(hole)}`);
+});
+
+test('launching: a mark from the future counts only within the bound, so a backward clock step cannot hold a slot', async (t) => {
+  const { f } = await fresh(t, 'launching-future');
+  const now = 1_440_433_800_000;
+  const G = f.LAUNCH_GRACE_MS;
+  const marked = (at) => ({ id: 'cr-1', status: 'spawned', launching_at: at });
+  // A clock stepped back a little after the claim: the mark reads as a few seconds ahead, and the
+  // lead it marks is still starting.
+  assert.equal(f.launching(marked(now + 5000), now), true, 'a small backward step is still starting');
+  assert.equal(f.launching(marked(now + G - 1), now), true);
+  // Ahead by the bound or more, it is not believed: read as "starting" it would keep the row out of
+  // reconcile's reach until the clock caught up, and a garbage stamp would never be caught up with.
+  assert.equal(f.launching(marked(now + G), now), false, 'a step as large as the bound falls back to the unmarked reading');
+  assert.equal(f.launching(marked(9e15), now), false, 'a stamp from the far future is ignored');
+  assert.equal(f.launching(marked(now * 1000), now), false, 'a stamp in microseconds is ignored');
+});
+
+test('LAUNCH_GRACE_MS covers the repo-lock wait, one whole fetch, and a minute', async (t) => {
+  const { f } = await fresh(t, 'launching-grace');
+  // A literal in fleet.mjs, so the relation is pinned here: any shorter, and a spawn that waited out
+  // the repo lock and then one whole fetch would read as a dead lead while its spawner still runs.
+  // It is not the longest launch possible: every git call gets its own GIT_TIMEOUT_MS.
+  const { GIT_TIMEOUT_MS, LOCK_TIMEOUT_MS } = await import('../bin/lib/worktree.mjs');
+  assert.ok(Number.isInteger(GIT_TIMEOUT_MS) && GIT_TIMEOUT_MS > 0, `the fetch allowance, got ${GIT_TIMEOUT_MS}`);
+  assert.ok(Number.isInteger(LOCK_TIMEOUT_MS) && LOCK_TIMEOUT_MS > 0, `the repo-lock wait, got ${LOCK_TIMEOUT_MS}`);
+  assert.ok(f.LAUNCH_GRACE_MS >= LOCK_TIMEOUT_MS + GIT_TIMEOUT_MS + 60_000,
+    `LAUNCH_GRACE_MS (${f.LAUNCH_GRACE_MS}) must cover the ${LOCK_TIMEOUT_MS} ms repo-lock wait, the ${GIT_TIMEOUT_MS} ms fetch and a minute for the local steps`);
 });

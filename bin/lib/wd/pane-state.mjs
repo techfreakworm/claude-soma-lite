@@ -261,8 +261,8 @@ const clock = (now) => {
  * @param {Array<{id: string, name: string}>} rows the lead id and its tmux session name
  * @param {{panes: Map|null, capture?: (name: string, lines: number) => string, now?: () => number,
  *          lines?: number, timeoutMs?: number}} opts
- *   `panes` is `tmux.paneStates()`'s Map, or `null` when tmux could not be listed — then every
- *   row is `unobservable` and nothing is captured.
+ *   `panes` is `tmux.paneStates()`'s Map, or `null` when tmux could not be listed, or listed
+ *   nothing it could parse — then every row is `unobservable` and nothing is captured.
  */
 export function takeCensus(rows, opts) {
   const out = new Map();

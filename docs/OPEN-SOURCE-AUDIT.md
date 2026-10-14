@@ -225,8 +225,7 @@ operator alone.
 - Done: `package.json` declares `"license": "MIT"` (`c811627`) and keeps `"private": true`, which
   only stops `npm publish`; whether to keep that is the operator's call.
 - `README.md` carries the licence badge and a *License* section, `CONTRIBUTING.md` accepts
-  contributions under MIT with a Developer Certificate of Origin sign-off, and `CHANGELOG.md`
-  records both.
+  contributions under MIT (signing off commits is optional), and `CHANGELOG.md` records both.
 
 ## 3. Third-party attribution
 

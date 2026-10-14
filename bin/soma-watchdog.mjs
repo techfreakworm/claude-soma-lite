@@ -272,13 +272,14 @@ const HARNESS_EVENTS = new Set(['HARNESS']);
  *    freed slot admits another lead and the fleet runs N metered beside M unmetered sessions.
  *
  * **Scoped on the status enum and NOT on tmux liveness, which was the other candidate.**
- * `aliveSessions()` may answer `null`: a wedged tmux server and a healthy idle one produce the
- * same empty output, and phase 2 already declines to read that as a dead fleet. A meter gated on
- * the same predicate would switch the whole fleet's breaker off on exactly the ticks when
- * something else is already wrong — trading a status-shaped hole for a liveness-shaped one of
- * the same class, and a wider one. Metering reads transcripts, not tmux; it needs no liveness
- * answer, and a spend cap must not acquire a dependence on one. (A trip on a row whose lead has
- * since died costs nothing: the flag only bites through that lead's own hook.)
+ * `aliveSessions()` may answer `null` — a wedged tmux server and a healthy idle one produce the
+ * same empty output, and a listing in which no row parses names no session at all — and phase 2
+ * already declines to read either as a dead fleet. A meter gated on the same predicate would
+ * switch the whole fleet's breaker off on exactly the ticks when something else is already
+ * wrong — trading a status-shaped hole for a liveness-shaped one of the same class, and a wider
+ * one. Metering reads transcripts, not tmux; it needs no liveness answer, and a spend cap must
+ * not acquire a dependence on one. (A trip on a row whose lead has since died costs nothing: the
+ * flag only bites through that lead's own hook.)
  *
  * **Terminal rows are out, deliberately.** A `done`/`failed`/`skipped` lead has reported that it
  * stopped; its transcript is not growing, and `BUDGET_TRIPPED` written against it is a flag only
@@ -620,9 +621,10 @@ export async function tick(deps) {
   // read here that looks at what a pane is RUNNING.
   //
   // `null` from `paneStates` is the same answer as `null` from `aliveSessions` — tmux could not
-  // be listed — and gets the same treatment: nothing is written about any pane this tick, and it
-  // is announced. Phase 2 consumes the census (a `spawned` row on a shell is dead to reconcile),
-  // and phase 1 kills only a pane the census read as alive, which is why this runs first.
+  // be listed, or listed nothing soma could parse — and gets the same treatment: nothing is
+  // written about any pane this tick, and it is announced. Phase 2 consumes the census (a
+  // `spawned` row on a shell is dead to reconcile), and phase 1 kills only a pane the census read
+  // as alive, which is why this runs first.
   const panes = deps.paneStates();
   const census = panes === null || panes === undefined
     ? null
@@ -666,11 +668,12 @@ export async function tick(deps) {
   // dead lead's session alive on purpose (that pane IS the death scene), so `hasSession` is
   // true for a dead lead and a reconciler built on it finds no dead leads ever.
   //
-  // `null` means tmux could not be read at all, which is NOT the same answer as "nothing is
-  // alive". A wedged tmux reports the same empty output a healthy idle server does; read as
-  // liveness, one hiccup makes every spawned row look dead in the same tick and this branch
-  // then kills and respawns ten LIVE leads. One tick of revival latency is the cheap side of
-  // that trade, and it is announced so the pause is not silent.
+  // `null` means tmux could not be read — the listing failed, or came back with no row soma can
+  // parse (#45) — which is NOT the same answer as "nothing is alive". A wedged tmux reports the
+  // same empty output a healthy idle server does; read as liveness, one hiccup makes every
+  // spawned row look dead in the same tick and this branch then kills and respawns ten LIVE
+  // leads. One tick of revival latency is the cheap side of that trade, and it is announced so
+  // the pause is not silent.
   const alive = deps.aliveSessions();
   const skipped = [];
   if (alive === null || alive === undefined) skipped.push('reconcile', 'revival');
@@ -679,8 +682,8 @@ export async function tick(deps) {
     say('TMUX_UNREADABLE', {
       skipped,
       why: alive === null || alive === undefined
-        ? 'tmux list-panes exited non-zero; a wedged server and an idle one are indistinguishable by output, and treating that as a dead fleet would respawn over live work'
-        : 'the pane listing exited non-zero while the liveness listing did not; no pane_state is written this tick, because an unlisted pane is not an absent one',
+        ? 'tmux list-panes failed, or answered a listing soma could not parse; a wedged server and an idle one are indistinguishable by output, a listing with no parsable row names no session, and treating either as a dead fleet would respawn over live work'
+        : 'the pane listing failed, or answered one soma could not parse, while the liveness listing was read; no pane_state is written this tick, because an unlisted pane is not an absent one',
     });
   }
   if (alive !== null && alive !== undefined) {
@@ -689,7 +692,11 @@ export async function tick(deps) {
     // contract (a Set of names in, ids out) is pinned and shared; with no census this tick the
     // set passes through untouched, so a tmux hiccup can never widen the dead set.
     const aliveForReconcile = deadShells.size === 0 ? alive : new Set([...alive].filter((name) => !deadShells.has(name)));
-    const { deadLeads } = reconcile(fleet, aliveForReconcile);
+    // The tick's clock, so a row `soma_spawn` claimed and is still launching outside the fleet lock
+    // (its session not created yet) is left alone rather than killed and spawned a second time.
+    // Only until its mark is `LAUNCH_GRACE_MS` old: past that the row is revived like any dead lead,
+    // usually a spawner that died (`LAUNCH_GRACE_MS` says what it costs a launch that is only slow).
+    const { deadLeads } = reconcile(fleet, aliveForReconcile, now);
     // `reconcile`'s `updates` are deliberately NOT applied. They re-affirm `spawned`, which is
     // a no-op in meaning — but written through `setTaskStatus` they would stamp `updated` on
     // every tick, which resets the wall-clock cap measured against it below and makes the row
@@ -1057,6 +1064,11 @@ function recordPane(deps, task, read, now) {
  * this row is owned transactionally, and `updated` is deliberately NOT stamped — it is the clock
  * the terminal guard reads, and stamping it here would decline a terminal report filed at or
  * before this write *permanently*, leaving the row `spawned` and its slot held forever.
+ *
+ * It also clears the launch mark admission's claim wrote: the session now exists, so from this
+ * write on the row's liveness is the session's. In the same write as the target, so no reader
+ * finds a row that has lost its mark without yet naming its session. A row that carries no mark
+ * (a revival, a rotation, a row from before the mark existed) is left exactly as it was.
  */
 function recordSession(deps, task, res, extra = {}) {
   const uuid = typeof res?.session_uuid === 'string' && res.session_uuid !== '' ? res.session_uuid : null;
@@ -1074,6 +1086,7 @@ function recordSession(deps, task, res, extra = {}) {
     r.tmux_session = target;
     if (writeSeat) r.seat = seat;
     if (rotations !== null) r.rotations = rotations;
+    if (r.launching_at != null) r.launching_at = null;
     return true;
   });
   // Mirrored onto the snapshot so the phases after this one read the row that was published,
@@ -1082,6 +1095,7 @@ function recordSession(deps, task, res, extra = {}) {
   task.tmux_session = target;
   if (writeSeat) task.seat = seat;
   if (rotations !== null) task.rotations = rotations;
+  if (task.launching_at != null) task.launching_at = null;
   return { uuid, target };
 }
 
@@ -1357,8 +1371,24 @@ function admitNext(deps, cfg, fleet, tasks, history, now, frozen) {
   // Claim first, spawn second — `soma_spawn`'s order, and for its reason: two admitters that
   // check capacity and then separately mark a row can each see a slot and both take it. This is
   // also what stamps `last_spawn_at`, the stagger clock, so nothing below touches that field.
-  deps.setTaskStatus(nextId, 'spawned');
+  //
+  // The claim carries the LAUNCH MARK, in the same transaction as the status (a nested
+  // `setTaskStatus` shares this snapshot and publishes once): the session is the last thing the
+  // spawn creates, after a fetch allowed two minutes, and until then a `spawned` row with no
+  // session is a dead lead to both status reports. The mark is what says "starting" instead
+  // (`fleet.launching`); `recordSession` clears it, and so does the rollback below. Stamped on a
+  // fresh reading of the clock rather than the tick's `now`: a revival that threw after a long
+  // fetch earlier in this tick leaves admission running minutes after `now`, and an old stamp
+  // would spend the grace before this spawn had started.
+  const launchAt = deps.now();
+  deps.updateFleet((live) => {
+    deps.setTaskStatus(nextId, 'spawned');
+    const r = (Array.isArray(live?.tasks) ? live.tasks : []).find((x) => x?.id === nextId);
+    if (r) r.launching_at = launchAt;
+    return true;
+  });
   task.status = 'spawned';
+  task.launching_at = launchAt;
 
   let res;
   try {
@@ -1370,12 +1400,18 @@ function admitNext(deps, cfg, fleet, tasks, history, now, frozen) {
     // refusing to move and every task behind it would never start. Counted, and given up on
     // after the same three attempts a revival gets.
     const attempt = (task.attempts == null ? 0 : task.attempts) + 1;
+    // The launch is over, so its mark goes in the same write as the attempt: a row queued again or
+    // failed carries no claim to be starting.
     deps.updateFleet((live) => {
       const r = (Array.isArray(live?.tasks) ? live.tasks : []).find((x) => x?.id === nextId);
-      if (r) r.attempts = attempt;
+      if (r) {
+        r.attempts = attempt;
+        r.launching_at = null;
+      }
       return true;
     });
     task.attempts = attempt;
+    task.launching_at = null;
     deps.appendEvent(ORCH, { type: 'WATCHDOG_ERROR', payload: { where: 'spawn', error: reason(e), attempt }, lead: nextId });
     if (exhausted(attempt, cfg)) {
       deps.setTaskStatus(nextId, 'failed');

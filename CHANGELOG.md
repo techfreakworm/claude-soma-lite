@@ -16,8 +16,7 @@ on `main`.
 #### Added
 
 - **A licence.** claude-soma-lite is released under the MIT License (`LICENSE`). Contributions are
-  accepted under the same terms, with a Developer Certificate of Origin sign-off on every commit
-  (`CONTRIBUTING.md`).
+  accepted under the same terms (`CONTRIBUTING.md`). Signing off commits is optional.
 - **A trademark notice.** The README and `THIRD_PARTY_NOTICES.md` say that claude-soma-lite is an
   independent project, not affiliated with Anthropic; that its name refers to the software it works
   with, descriptively and not as a claim of affiliation; and that it otherwise names Claude and
