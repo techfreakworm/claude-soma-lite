@@ -1699,14 +1699,28 @@ test('up asks about the max_leads admission will run, when soma.json spells it a
   assert.match(h.stdout(), /Fleet worst case: 10 leads × 38,000,000 est_tokens \(iterate/);
 });
 
-test('up refuses a max_leads no reader accepts, before it asks or starts anything (#21)', async (t) => {
+test('up shows the worst case the breaker will enforce, when soma.json spells a tokens_cap as a string (#52)', async (t) => {
+  const home = root(t);
+  // The REAL loader, as above. The projection read `"60000000"` as 0 and showed the all-standard
+  // 200,000,000, while the breaker would let ten iterate leads spend 600,000,000.
+  const { loadConfig } = await import('../bin/lib/config.mjs');
+  writeFileSync(join(home, 'soma.json'), JSON.stringify({ max_leads: 10, budgets: { iterate: { tokens_cap: '60000000' } } }));
+  const h = mk({ loadConfig });   // declined: the prompt is the subject, nothing need start
+  await dispatch(['up'], h.deps);
+  assert.equal(h.calls.confirm.length, 1);
+  assert.match(h.stdout(), /Fleet worst case: 10 leads × 60,000,000 est_tokens \(iterate, the largest budget class\) = 600,000,000/);
+});
+
+test('up refuses a max_leads or tokens_cap no reader accepts, before it asks or starts anything (#21, #52)', async (t) => {
   const home = root(t);
   const { loadConfig } = await import('../bin/lib/config.mjs');
-  // Two refusals, both exit ENV before the prompt: the real loader refuses the file, and — for a
-  // config that reached the arm unjudged (the stub below) — the projection refuses it too.
+  // Two refusals, both exit ENV before the prompt: the real loader refuses a bad max_leads, and the
+  // projection refuses what reaches the arm unjudged — a stubbed cfg, or a tokens_cap the loader
+  // leaves for the breaker to refuse per class.
   const cases = [
     [{ max_leads: 'ten' }, /max_leads/],
     [{ max_leads: 2.5 }, /max_leads/],
+    [{ budgets: { heavy: { tokens_cap: 'lots' } } }, /projectFleetSpend: budgets\.heavy\.tokens_cap/],
   ].map(([overlay, key]) => [JSON.stringify(overlay), () => { writeFileSync(join(home, 'soma.json'), JSON.stringify(overlay)); return loadConfig; }, key]);
   cases.push(['an unjudged cfg', () => () => ({ max_leads: 'ten', budgets: {} }), /projectFleetSpend: max_leads/]);
   for (const [label, arrange, key] of cases) {

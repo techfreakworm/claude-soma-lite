@@ -186,6 +186,9 @@ task naming an unconfigured repo cannot spawn:
 | `babysit` | 8,000,000 | 0 (disabled) | 0 (unbounded) |
 
 `tokens_cap` meters **the lead and its whole team** (teammate turns go to their own transcripts).
+A numeric string such as `"60000000"` is read as its number. Any other value that is not a
+non-negative number loads as it is: the breaker refuses it for that class's leads alone
+(`WATCHDOG_ERROR` each tick), and `soma up` refuses to project it.
 `turn_cap` is calibrated per lead and is a backstop, not a budget. Warn at 80 %, hard trip at 100 %.
 A warning logs `BUDGET` on the orchestrator's stream and writes `leads/<id>/BUDGET_WARNED`, once per
 lead session and allowance; the PreToolUse gate attaches a one-time `soma:` note to the lead's next

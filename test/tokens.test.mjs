@@ -1398,6 +1398,38 @@ test('projectFleetSpend reads a numeric-string max_leads as admission does (#21)
   assert.equal(projectFleetSpend({ max_leads: ' 4 ', budgets: {} }).max_leads, 4);
 });
 
+test('projectFleetSpend reads a numeric-string tokens_cap as the breaker does (#52)', async () => {
+  // The issue's own numbers. `count()` read `"60000000"` as 0, so the worst case shown was the
+  // all-standard 200,000,000 while the breaker would let ten iterate leads spend 600,000,000.
+  const { projectFleetSpend } = await load('proj52');
+  const p = projectFleetSpend({ max_leads: 10, budgets: { iterate: { tokens_cap: '60000000' }, standard: { tokens_cap: 20000000 } } });
+  assert.equal(p.worst.name, 'iterate');
+  assert.equal(p.worst.tokens_cap, 60000000);
+  assert.equal(p.worst.fleet_total, 600000000);
+  assert.match(p.message, /600,000,000/);
+});
+
+test('projectFleetSpend refuses a tokens_cap the breaker would refuse, rather than projecting 0 (#52)', async () => {
+  const { projectFleetSpend } = await load('proj52b');
+  for (const bad of ['lots', '', '  ', null, -1, '-1', Infinity, 'Infinity', NaN, true, [], {}]) {
+    assert.throws(() => projectFleetSpend({ max_leads: 1, budgets: { heavy: { tokens_cap: bad } } }),
+      { name: 'TypeError', message: /budgets\.heavy\.tokens_cap must be a non-negative number/ }, `tokens_cap ${String(bad)} was accepted`);
+  }
+  assert.throws(() => projectFleetSpend({ max_leads: 1, budgets: { heavy: { tokens_cap: 'lots' } } }), { message: /got "lots"$/ });
+  // The value is shown without JSON.stringify, which throws on a BigInt while explaining itself.
+  assert.throws(() => projectFleetSpend({ max_leads: 1, budgets: { heavy: { tokens_cap: 5n } } }), { message: /got 5$/ });
+});
+
+test('projectFleetSpend projects a class with no tokens_cap of its own as 0, and takes 0 and 2.5 as caps (#52)', async () => {
+  const { projectFleetSpend } = await load('proj52c');
+  // Not token-capped, as checkBudget reads it: an inherited cap is a cap nobody wrote in soma.json.
+  const inherited = Object.create({ tokens_cap: 'lots' });
+  const p = projectFleetSpend({ max_leads: 2, budgets: { capless: { turn_cap: 9 }, inherited, off: { tokens_cap: 0 }, half: { tokens_cap: 2.5 } } });
+  const by = Object.fromEntries(p.classes.map((c) => [c.name, c.fleet_total]));
+  assert.deepEqual(by, { capless: 0, inherited: 0, off: 0, half: 5 });
+  assert.equal(p.worst.name, 'half');
+});
+
 // ---------------------------------------------------------------------------
 // The ignore reasons themselves. My own `iterations` reason was factually wrong,
 // and the >20-char length check could not tell.

@@ -449,7 +449,9 @@ The retired key `resume_token_guard` is stripped with a warning if your file sti
 - `tokens_cap` meters **the lead and its whole team** in *est_tokens*: input + output +
   cache-creation tokens, plus a tenth of cache-read tokens, summed over every transcript Claude Code
   keeps for the lead's worktree (the lead's and its teammates'). `turn_cap` counts the lead's own
-  turns and is a runaway-loop backstop, not a budget.
+  turns and is a runaway-loop backstop, not a budget. A numeric-string `tokens_cap` such as
+  `"60000000"` is read as its number. Any other value that is not a non-negative number loads as it
+  is: the breaker refuses it for that class's leads alone, and `soma up` refuses to project it.
 - At 80% the watchdog logs a `BUDGET` event on the orchestrator's stream and writes
   `leads/<id>/BUDGET_WARNED`. Each lead session hears about it once per allowance: the gate
   attaches a short `soma:` note to the lead's next tool call that it allows, then renames the flag

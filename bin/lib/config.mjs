@@ -324,6 +324,16 @@ function dropLegacyKeys(cfg) {
  * projection read `"10"` as 0 while admission read it as 10, so `soma up` asked to open the queue
  * to 0 leads and ten started.
  *
+ * A budget class's own `tokens_cap`, when it is a numeric string the breaker would accept
+ * (`"60000000"`, `"2e3"`), is handed back as its number, by `wd/budget.mjs`' `reqNum` rule. It has
+ * three readers — the breaker, the spend projection and `soma_status` — and `"60000000"` was
+ * enforced at 60M while the projection read it as 0, so the worst case `soma up` asked about left
+ * that class out. **Anything else is left as it is, not refused here**: a cap belongs to one class,
+ * and the breaker refuses it per lead, inside the meter's own try, so a typo in one class stops
+ * only that class's breakers. Refused here, it would skip every tick and leave the whole fleet with
+ * no breaker, admission or revival. A class with no `tokens_cap` of its own, and a `budgets` or
+ * class that is not an object, is likewise left to its readers.
+ *
  * The cost, stated because it is the same one `seats` already pays: the watchdog's `tick()` calls
  * `loadConfig()` on its first line, outside every phase's try, so while soma.json holds a refused
  * value no tick runs — and the budget breakers of leads already running are skipped until the
@@ -336,6 +346,14 @@ function validated(cfg) {
     throw new Error(`${configPath()}: seats must be an array of { "config_dir": …, "label": … } entries, or [] (or no seats key) for no rotation, got ${got}`);
   }
   cfg.max_leads = counted('max_leads', cfg.max_leads);
+  if (isMergeable(cfg.budgets)) {
+    for (const name of keysOf(cfg.budgets)) {
+      const cls = cfg.budgets[name];
+      if (isMergeable(cls) && Object.hasOwn(cls, 'tokens_cap')) {
+        cls.tokens_cap = asCap(cls.tokens_cap);
+      }
+    }
+  }
   return cfg;
 }
 
@@ -350,6 +368,17 @@ function counted(key, raw) {
     throw new Error(`${configPath()}: ${key} must be a non-negative integer (a numeric string such as "10" is read as its number), got ${shown(raw)}`);
   }
   return n;
+}
+
+/**
+ * `raw` as its number when it is a trimmed, non-empty string `wd/budget.mjs`' `reqNum` would accept
+ * (`Number(raw)` finite and non-negative), so the value handed back is the one the breaker would
+ * have enforced. Anything else comes back untouched, for the breaker to refuse by name.
+ */
+function asCap(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return raw;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : raw;
 }
 
 /**

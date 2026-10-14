@@ -815,6 +815,11 @@ export function resumeContextLimit(cfg) {
  * open the queue to 0 leads, and `"10"` did the same while admission started ten. So it is read
  * as `fleet.admit` reads it — a non-negative integer, tolerating a numeric string — and anything
  * else is named.
+ *
+ * **It throws on a `tokens_cap` the breaker would not accept**, too, read as `wd/budget.mjs` reads
+ * it: a non-negative number, tolerating a numeric string. `"60000000"` was enforced at 60M but
+ * projected as 0, so the worst case left that class out. A class with no `tokens_cap` of its own
+ * projects as 0, as `checkBudget` reads it: not token-capped.
  */
 export function projectFleetSpend(cfg) {
   const o = cfg !== null && typeof cfg === 'object' ? cfg : {};
@@ -822,7 +827,9 @@ export function projectFleetSpend(cfg) {
   const budgets = o.budgets !== null && typeof o.budgets === 'object' ? o.budgets : {};
   const classes = Object.entries(budgets)
     .map(([name, cls]) => {
-      const cap = count(cls?.tokens_cap);
+      const cap = cls !== null && typeof cls === 'object' && Object.hasOwn(cls, 'tokens_cap')
+        ? spendCap(`budgets.${name}.tokens_cap`, cls.tokens_cap)
+        : 0;
       return { name, tokens_cap: cap, fleet_total: cap * maxLeads };
     })
     .sort((a, b) => b.fleet_total - a.fleet_total || a.name.localeCompare(b.name));
@@ -850,6 +857,19 @@ function spendNum(key, raw) {
   const n = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
   if (!Number.isInteger(n) || n < 0) {
     throw new TypeError(`projectFleetSpend: ${key} must be a non-negative integer, got ${show(raw)}`);
+  }
+  return n;
+}
+
+/**
+ * A budget cap for the spend projection: a non-negative finite number, tolerating the one string
+ * worth keeping. The same rule as the breaker's (`wd/budget.mjs` `reqNum`), not an integer one: a
+ * cap need not be whole.
+ */
+function spendCap(key, raw) {
+  const n = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) {
+    throw new TypeError(`projectFleetSpend: ${key} must be a non-negative number, got ${show(raw)}`);
   }
   return n;
 }

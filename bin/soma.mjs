@@ -1276,7 +1276,7 @@ export async function dispatch(argv, deps = {}) {
       // `max_leads: 10` accepting ~200M est_tokens per fleet run. It is shown once, here,
       // before the queue opens — not as a warning that scrolls past — and the arithmetic lives
       // in `tokens.projectFleetSpend` so this arm only has to print it. It throws on a
-      // `max_leads` no enforcer would accept, and that refuses here: a
+      // `max_leads` or `tokens_cap` no enforcer would accept, and that refuses here: a
       // confirmation asked over a figure that is not the fleet's is the prompt that lies.
       let spend;
       try {

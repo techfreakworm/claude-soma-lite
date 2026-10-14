@@ -609,15 +609,62 @@ test('loadConfig refuses a max_leads that is not a non-negative integer, naming 
   assert.equal(c.loadConfig().max_leads, 0, 'a cap of 0 is a real setting: admit nothing');
 });
 
-test('loadConfig normalises max_leads whatever budgets holds, null and arrays included (#21)', async (t) => {
+test('loadConfig normalises max_leads whatever budgets holds, null and arrays included (#21, #52)', async (t) => {
   const { c, p } = await fresh(t, 'budgets-shapes');
   // Not judged here: the shape of `budgets` is its readers' to refuse. Whatever it holds, the
-  // max_leads beside it is still read and handed back as its number.
-  for (const budgets of [null, [], 'x', { weird: null }, { weird: 5 }, { weird: ['5'] }, { capless: { turn_cap: 9 } }]) {
+  // max_leads beside it is still read and handed back as its number, and no tokens_cap is judged
+  // that a class does not carry itself.
+  for (const budgets of [null, [], 'x', { weird: null }, { weird: 5 }, { weird: 'x' }, { weird: ['5'] }, { capless: { turn_cap: 9 } }]) {
     seed(p, { max_leads: '3', budgets });
     let cfg;
     assert.doesNotThrow(() => { cfg = c.loadConfig(); }, `budgets ${JSON.stringify(budgets)} threw`);
     assert.equal(cfg.max_leads, 3);
+  }
+  // A class with no tokens_cap of its own is not token-capped, as checkBudget reads it, and is not
+  // handed one.
+  seed(p, { budgets: { capless: { turn_cap: 9 } } });
+  assert.equal(Object.hasOwn(c.loadConfig().budgets.capless, 'tokens_cap'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #52: a budget class's numeric-string tokens_cap is handed back as its number at load time,
+// by the breaker's rule, so the breaker, the spend projection and soma_status all read one value.
+// Anything else is left for the breaker to refuse in that class alone.
+// ---------------------------------------------------------------------------
+
+test('loadConfig hands back a numeric-string tokens_cap as a number (#52)', async (t) => {
+  const { c, p } = await fresh(t, 'tokens-cap-strings');
+  // The breaker enforced `"60000000"` at 60M while the projection read it as 0, so the worst case
+  // `soma up` asked about left that class out.
+  for (const [raw, want] of [['60000000', 60000000], [' 7 ', 7], ['2e3', 2000]]) {
+    seed(p, { budgets: { heavy: { tokens_cap: raw, turn_cap: '9' } } });
+    const cls = c.loadConfig().budgets.heavy;
+    assert.equal(cls.tokens_cap, want, `${JSON.stringify(raw)} is read as reqNum reads it`);
+    assert.equal(cls.turn_cap, '9', 'only tokens_cap is normalised: the other keys of the class are untouched');
+  }
+  // Normalising the merged copy must not reach the frozen DEFAULTS (it would throw if it tried).
+  assert.equal(c.DEFAULTS.budgets.standard.tokens_cap, 20000000);
+  assert.equal(Object.hasOwn(c.DEFAULTS.budgets, 'heavy'), false);
+});
+
+test('loadConfig leaves a tokens_cap the breaker would refuse as it is, for the breaker to refuse in that class alone (#52)', async (t) => {
+  const { c, p } = await fresh(t, 'tokens-cap-left');
+  const { checkBudget } = await import('../bin/lib/wd/budget.mjs');
+  // Not refused at load: `tick()` calls loadConfig() first, outside every phase's try, so a throw
+  // here would skip every tick and leave the whole fleet with no breaker. The breaker refuses the
+  // value per lead instead, inside the meter's own try, so only that class loses its breaker.
+  for (const value of ['lots', '', '  ', null, -1, '-1', 'Infinity', 'NaN', true, [], {}]) {
+    seed(p, { budgets: { heavy: { tokens_cap: value, turn_cap: 9 } } });
+    let cfg;
+    assert.doesNotThrow(() => { cfg = c.loadConfig(); }, `tokens_cap ${JSON.stringify(value)} refused the whole file`);
+    assert.deepEqual(cfg.budgets.heavy.tokens_cap, value, `${JSON.stringify(value)} is handed through untouched`);
+    assert.throws(() => checkBudget(null, cfg.budgets.heavy), { name: 'TypeError', message: /cls\.tokens_cap must be a non-negative finite number/ },
+      `${JSON.stringify(value)}: the breaker still refuses it`);
+  }
+  // 0 is "no token cap" and a cap need not be whole: both are the breaker's to accept.
+  for (const ok of [0, 2.5]) {
+    seed(p, { budgets: { heavy: { tokens_cap: ok, turn_cap: 9 } } });
+    assert.equal(c.loadConfig().budgets.heavy.tokens_cap, ok);
   }
 });
 
