@@ -186,6 +186,15 @@ export const LEAD_MODEL = 'opus';
 const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
 /**
+ * The lead's effort from `soma.json`'s `lead_effort`. A level on `EFFORT_LEVELS` is used as
+ * given; anything else (missing, empty, a typo, `'inherit'`) reads as `'max'`, so a config that
+ * was never written or was written wrong keeps the original pin rather than dropping it.
+ */
+export function leadEffortOf(value) {
+  return EFFORT_LEVELS.includes(value) ? value : 'max';
+}
+
+/**
  * The installed `bin/` directory — this file's parent's parent. Same derivation and same
  * reason as `settings-gen.BIN_DIR`: `fileURLToPath`, never `new URL(...).pathname`, because
  * the latter percent-encodes, so an install under `~/My Repos/` yields `My%20Repos` and the
@@ -710,7 +719,7 @@ const trustFileFor = (env) => resolve(join(env?.CLAUDE_CONFIG_DIR || env?.HOME |
  * rule still returned `Permission to use Bash with command … has been denied.` The bypass
  * removes the *prompts* — which is the point, since nobody is attached — not the rules.
  */
-export function buildLeadArgv({ id, sessionUuid, brief, settingsPath, mcpPath, standingPath, resume = false } = {}) {
+export function buildLeadArgv({ id, sessionUuid, brief, settingsPath, mcpPath, standingPath, resume = false, leadEffort } = {}) {
   leadId(id, 'buildLeadArgv');
   required(sessionUuid, 'buildLeadArgv', 'sessionUuid');
   required(brief, 'buildLeadArgv', 'brief');
@@ -721,7 +730,7 @@ export function buildLeadArgv({ id, sessionUuid, brief, settingsPath, mcpPath, s
   return [
     'claude',
     '--model', LEAD_MODEL,
-    '--effort', 'max',
+    '--effort', leadEffortOf(leadEffort),
     ...(resume ? ['--resume', sessionUuid] : ['--session-id', sessionUuid]),
     '--name', name,
     '--permission-mode', 'acceptEdits',
@@ -777,7 +786,7 @@ export function buildLeadArgv({ id, sessionUuid, brief, settingsPath, mcpPath, s
  * which is exactly what every lead got before seats existed. `seatConfigDir` says why each of
  * those three reads that way and why a relative dir is refused.
  */
-export function buildLeadEnv({ id, sessionUuid, teammateEffort, teammateMcpAllow, leadBranchPush, env = process.env, configDir } = {}) {
+export function buildLeadEnv({ id, sessionUuid, teammateEffort, teammateMcpAllow, leadBranchPush, leadEffort, env = process.env, configDir } = {}) {
   leadId(id, 'buildLeadEnv');
   const seat = seatConfigDir(configDir, 'buildLeadEnv');
   const out = {};
@@ -833,7 +842,7 @@ export function buildLeadEnv({ id, sessionUuid, teammateEffort, teammateMcpAllow
   // `null`, `''` and `'inherit'` are all simply not levels, so the four cases the old branch
   // spelled out by hand fall out of the one rule — and so does `'inheret'`.
   const inherit = !EFFORT_LEVELS.includes(teammateEffort);
-  if (inherit) out.CLAUDE_CODE_EFFORT_LEVEL = 'max';
+  if (inherit) out.CLAUDE_CODE_EFFORT_LEVEL = leadEffortOf(leadEffort);
   return out;
 }
 
@@ -968,7 +977,7 @@ function launch({ id, cwd, sessionUuid, resume, task, cfg, deps, configDir }) {
   // then carries the seat into `preTrust` and `trustFileFor` below; that is what makes the three
   // agree by construction, and why neither of them takes the seat as a separate argument — a
   // second spelling would be a second place for them to disagree.
-  const env = buildLeadEnv({ id, sessionUuid, teammateEffort: cfg.teammate_effort, teammateMcpAllow: cfg.teammate_mcp_allow, leadBranchPush: cfg.lead_branch_push, env: deps.env ?? process.env, configDir });
+  const env = buildLeadEnv({ id, sessionUuid, teammateEffort: cfg.teammate_effort, teammateMcpAllow: cfg.teammate_mcp_allow, leadBranchPush: cfg.lead_branch_push, leadEffort: cfg.lead_effort, env: deps.env ?? process.env, configDir });
 
   // Immediately before this launch, never batched across launches: the file is
   // last-writer-wins against claude's own rewrites of it, so a mark made for an earlier
@@ -992,7 +1001,7 @@ function launch({ id, cwd, sessionUuid, resume, task, cfg, deps, configDir }) {
   // teammate as "your cwd is <path>" instead of `cd`-ing to it in every command (the cd-compound
   // fix — a `cd` in a compound was the shape Claude Code 2.1.259 stopped 79 sessions on).
   const standingPath = deps.writeStanding({ ...task, cwd });
-  const argv = buildLeadArgv({ id, sessionUuid, brief: resume ? RESUME_BRIEF : task.brief, settingsPath, mcpPath, standingPath, resume });
+  const argv = buildLeadArgv({ id, sessionUuid, brief: resume ? RESUME_BRIEF : task.brief, settingsPath, mcpPath, standingPath, resume, leadEffort: cfg.lead_effort });
 
   const name = target(id);
   // `logs/` is nobody else's job. pipe-pane's `cat >>` into a missing directory fails in the

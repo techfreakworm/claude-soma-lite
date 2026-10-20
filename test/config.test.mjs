@@ -114,6 +114,7 @@ test('DEFAULTS carry the exact governance values the fleet is built around', asy
     settle_minutes: 30,
     team_size_max: 3,
     teammate_effort: 'inherit', // decision D2
+    lead_effort: 'max',
     notify_policy: 'full',
     tested_claude: { min: '2.1.178', max: '2.1.999' },
     // A fraction, not an absolute: the absolute this replaces was a spend number read as a

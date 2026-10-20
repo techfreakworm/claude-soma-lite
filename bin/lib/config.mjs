@@ -54,6 +54,9 @@ export const DEFAULTS = deepFreeze({
   settle_minutes: 30,
   team_size_max: 3,
   teammate_effort: 'inherit',  // decision D2
+  // The lead's own reasoning level: `--effort` on its argv, and the level teammates inherit when
+  // teammate_effort is `inherit`. Anything not on spawn's EFFORT_LEVELS reads as 'max', the pin.
+  lead_effort: 'max',
   notify_policy: 'full',
   tested_claude: { min: '2.1.178', max: '2.1.999' },
   // Revival guard, expressed as a FRACTION of the model's context window rather than an

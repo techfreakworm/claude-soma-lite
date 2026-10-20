@@ -1951,3 +1951,27 @@ test('SEAM: a launch on a seat outside the pool still denies that seat\'s server
   assert.ok(deny.includes('mcp__rogue_seat_server'),
     `the lead launches under ${rogue} and every teammate in this worktree mounts its servers; personal denies written: ${personal.join(', ') || '(none)'}`);
 });
+
+// --- lead_effort ---------------------------------------------------------------
+
+test('lead_effort of a level sets the lead flag and the level teammates inherit', () => {
+  const argv = s.buildLeadArgv({ id: 'cr-1', sessionUuid: 'u1', brief: 'b', settingsPath: '/s', mcpPath: '/m', standingPath: '/d', leadEffort: 'xhigh' });
+  assert.equal(argAfter(argv, '--effort'), 'xhigh');
+  const env = s.buildLeadEnv({ id: 'cr-1', teammateEffort: 'inherit', leadEffort: 'xhigh', env: SPAWNER_ENV });
+  assert.equal(env.CLAUDE_CODE_EFFORT_LEVEL, 'xhigh', 'inherit means the teammates get the lead\'s own level');
+});
+
+test('lead_effort that is missing, empty, a typo or inherit keeps the max pin', () => {
+  for (const bad of [undefined, null, '', 'inherit', 'xhihg', 'MAX', 3]) {
+    assert.equal(s.leadEffortOf(bad), 'max', `${JSON.stringify(bad)} must read as max`);
+    const argv = s.buildLeadArgv({ id: 'cr-1', sessionUuid: 'u1', brief: 'b', settingsPath: '/s', mcpPath: '/m', standingPath: '/d', leadEffort: bad });
+    assert.equal(argAfter(argv, '--effort'), 'max');
+    const env = s.buildLeadEnv({ id: 'cr-1', teammateEffort: 'inherit', leadEffort: bad, env: SPAWNER_ENV });
+    assert.equal(env.CLAUDE_CODE_EFFORT_LEVEL, 'max');
+  }
+});
+
+test('a teammate_effort level still drops the env var when lead_effort is set', () => {
+  const env = s.buildLeadEnv({ id: 'cr-1', teammateEffort: 'high', leadEffort: 'xhigh', env: SPAWNER_ENV });
+  assert.ok(!('CLAUDE_CODE_EFFORT_LEVEL' in env));
+});

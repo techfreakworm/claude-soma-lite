@@ -17,6 +17,12 @@ Work tracked as GitHub issues, newest first.
 
 #### Added
 
+- **`lead_effort` sets the lead's reasoning level.** The lead was pinned to `--effort max`, and
+  its teammates inherited `CLAUDE_CODE_EFFORT_LEVEL=max`. `lead_effort` in `soma.json` (default
+  `'max'`) now sets both: the lead's `--effort` flag, and the level teammates inherit while
+  `teammate_effort` is `inherit`. Any value not on `EFFORT_LEVELS` (missing, empty, a typo,
+  `'inherit'`) reads as `'max'`, so a config that was never written or was written wrong keeps the
+  original pin. It takes effect at the next spawn or resume.
 - **A lead may push its own branch.** The gate used to refuse every `git push` from the lead and
   tell it to hand the push to a teammate. `soma-pr` needs `soma/<id>` on `origin` and does not
   push it, and in practice leads handed that push to the operator. The lead may now run exactly
