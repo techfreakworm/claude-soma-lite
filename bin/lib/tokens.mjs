@@ -820,6 +820,10 @@ export function resumeContextLimit(cfg) {
  * it: a non-negative number, tolerating a numeric string. `"60000000"` was enforced at 60M but
  * projected as 0, so the worst case left that class out. A class with no `tokens_cap` of its own
  * projects as 0, as `checkBudget` reads it: not token-capped.
+ *
+ * **The classes are ordered by `tokens_cap`, not by `fleet_total`** (#69). For any `max_leads`
+ * above 0 the two orders are the same, but at `max_leads: 0` every total ties at 0, and the name
+ * tie-break named `babysit` as the largest class in place of `iterate`.
  */
 export function projectFleetSpend(cfg) {
   const o = cfg !== null && typeof cfg === 'object' ? cfg : {};
@@ -832,7 +836,7 @@ export function projectFleetSpend(cfg) {
         : 0;
       return { name, tokens_cap: cap, fleet_total: cap * maxLeads };
     })
-    .sort((a, b) => b.fleet_total - a.fleet_total || a.name.localeCompare(b.name));
+    .sort((a, b) => b.tokens_cap - a.tokens_cap || a.name.localeCompare(b.name));
   const worst = classes[0] ?? { name: null, tokens_cap: 0, fleet_total: 0 };
   const n = (v) => v.toLocaleString('en-US');
   const standard = classes.find((c) => c.name === 'standard');

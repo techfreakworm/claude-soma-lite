@@ -1430,6 +1430,40 @@ test('projectFleetSpend projects a class with no tokens_cap of its own as 0, and
   assert.equal(p.worst.name, 'half');
 });
 
+test('projectFleetSpend names the largest budget class at max_leads 0, with the 0 total (#69)', async () => {
+  // Sorted by fleet_total, every total tied at 0 here and the name tie-break named babysit, the
+  // second smallest shipped class, as the largest.
+  const { projectFleetSpend } = await load('proj69');
+  const { DEFAULTS } = await import('../bin/lib/config.mjs');
+  const p = projectFleetSpend({ max_leads: 0, budgets: DEFAULTS.budgets });
+  assert.equal(p.worst.name, 'iterate');
+  assert.equal(p.worst.tokens_cap, 38000000);
+  assert.equal(p.worst.fleet_total, 0);
+  assert.ok(p.message.includes('0 leads × 38,000,000 est_tokens (iterate, the largest budget class) = 0 est_tokens.'), p.message);
+  assert.ok(!p.message.includes('babysit, the largest'), p.message);
+});
+
+test('projectFleetSpend orders the classes as fleet_total would, for any max_leads above 0 (#69)', async () => {
+  const { projectFleetSpend } = await load('proj69b');
+  const { DEFAULTS } = await import('../bin/lib/config.mjs');
+  for (const maxLeads of [1, 10]) {
+    const p = projectFleetSpend({ max_leads: maxLeads, budgets: DEFAULTS.budgets });
+    assert.equal(p.worst.name, 'iterate', `max_leads ${maxLeads}`);
+    assert.equal(p.worst.fleet_total, 38000000 * maxLeads, `max_leads ${maxLeads}`);
+    const byTotal = [...p.classes].sort((a, b) => b.fleet_total - a.fleet_total || a.name.localeCompare(b.name));
+    assert.deepEqual(p.classes.map((c) => c.name), byTotal.map((c) => c.name), `max_leads ${maxLeads}: the order fleet_total gives`);
+  }
+});
+
+test('projectFleetSpend still breaks a tokens_cap tie by name, at max_leads 0 and above (#69)', async () => {
+  const { projectFleetSpend } = await load('proj69c');
+  for (const maxLeads of [0, 3]) {
+    const p = projectFleetSpend({ max_leads: maxLeads, budgets: { small: { tokens_cap: 1000 }, zeta: { tokens_cap: 5000 }, alpha: { tokens_cap: 5000 } } });
+    assert.deepEqual(p.classes.map((c) => c.name), ['alpha', 'zeta', 'small'], `max_leads ${maxLeads}`);
+    assert.equal(p.worst.name, 'alpha', `max_leads ${maxLeads}`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The ignore reasons themselves. My own `iterations` reason was factually wrong,
 // and the >20-char length check could not tell.
