@@ -53,7 +53,7 @@
  * subcommand, and SKILL.md correctly says so.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, linkSync, mkdirSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, linkSync, mkdirSync, readFileSync, readSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -2383,10 +2383,26 @@ const watchdogEnv = (env) => {
   return out;
 };
 
-// `pathToFileURL`, not a `file://` template: `process.argv[1]` arrives unresolved and a path
-// needing percent-encoding (a checkout under `/Users/x/My Repos/`) would never match, leaving
-// a CLI that exits 0 having done nothing at all. Same guard as `soma-watchdog.mjs`.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Was this file run, or imported? `import.meta.main` where Node has it (>= 24.2). The fallback is
+// for the 24.0/24.1 floor `package.json` allows, and it compares the entry path both as spelled
+// and with its symlinks resolved, as `soma-pr.mjs` does. `pathToFileURL`, not a `file://`
+// template: a path needing percent-encoding (a checkout under `/Users/x/My Repos/`) would never
+// match. The resolved spelling is what a package-manager install needs: `npm install -g` starts
+// this file through a symlink, the ESM loader resolves it for `import.meta.url` and not for
+// `process.argv[1]`, and comparing only the spelled path left an installed `soma` that exited 0
+// having done nothing at all.
+const isMain = () => {
+  if (typeof import.meta.main === 'boolean') return import.meta.main;
+  const arg = process.argv[1];
+  if (!arg) return false;
+  const urls = [pathToFileURL(arg).href];
+  try {
+    urls.push(pathToFileURL(realpathSync.native(arg)).href);
+  } catch { /* raced away; the spelled path is still worth comparing */ }
+  return urls.includes(import.meta.url);
+};
+
+if (isMain()) {
   dispatch(process.argv.slice(2), realDeps()).then(
     (code) => {
       // `process.exitCode`, never `process.exit()`: exiting truncates a piped stdout mid-write,
