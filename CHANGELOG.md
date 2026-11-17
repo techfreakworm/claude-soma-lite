@@ -55,6 +55,14 @@ Work tracked as GitHub issues, newest first.
 
 #### Fixed
 
+- **`soma` runs when it is started through a symlink.** `npm install -g
+  github:techfreakworm/claude-soma-lite` installs, and puts `soma` on `PATH` as a symlink to
+  `bin/soma.mjs`. The entry guard compared `import.meta.url` with `process.argv[1]` as spelled, the
+  ESM loader resolves the symlink in one and not the other, and so the installed command printed
+  nothing and exited 0 for every verb, `doctor` and `up` included. The guard now uses
+  `import.meta.main` where Node has it, and otherwise compares the entry path both as spelled and
+  with its symlinks resolved, as `soma-pr.mjs` already did. The wrapper in the README is still the
+  documented way to run soma, because it pins the node that supervises the fleet.
 - **Leads can call sequential-thinking again.** When the operator also had a server named
   `sequential-thinking` at user scope, every worktree guard file denied `mcp__sequential-thinking`.
   The lead loads that file too, and a deny by server name matches the lead's own `--mcp-config`

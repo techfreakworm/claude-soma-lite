@@ -16,7 +16,7 @@ import './soma-home.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -3573,6 +3573,21 @@ test('the entrypoint runs, exits with the arm code, and prints usage on a bad ve
   const bad = run(['frobnicate']);
   assert.equal(bad.code, 1);
   assert.match(bad.out.toLowerCase(), /usage/);
+});
+
+test('the entrypoint runs when it is started through a symlink, as `npm install -g` starts it', async (t) => {
+  const home = root(t);
+  // `npm install -g github:techfreakworm/claude-soma-lite` puts `soma` on PATH as a symlink to
+  // `bin/soma.mjs`. The ESM loader resolves symlinks for `import.meta.url` and does not for
+  // `process.argv[1]`, so a guard that compares the two reads "imported": measured on Node
+  // 24.15, the installed `soma` printed nothing and exited 0 for every verb, `doctor` included.
+  const dir = mkdtempSync(join(tmpdir(), 'soma-bin-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const link = join(dir, 'soma');
+  symlinkSync(CLI, link);
+  const r = spawnSync(process.execPath, [link, '--help'], { encoding: 'utf8', env: { ...process.env, SOMA_HOME: home } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout.toLowerCase(), /usage: soma/, 'a symlinked soma must run, not exit 0 in silence');
 });
 
 test('USAGE names every verb the dispatcher answers, and no verb it does not', async (t) => {
